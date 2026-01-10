@@ -62,6 +62,7 @@ set(SOURCES_BOARD
     ${SRC}/USBDevice/DeviceDriver/DeviceDriver.cpp
     ${SRC}/USBDevice/DeviceDriver/PSClassic/PSClassic.cpp
     ${SRC}/USBDevice/DeviceDriver/PS3/PS3.cpp
+    ${SRC}/USBDevice/DeviceDriver/PS4/PS4.cpp          # <<< PS4 DEVICE AÑADIDO
     ${SRC}/USBDevice/DeviceDriver/Switch/Switch.cpp
     ${SRC}/USBDevice/DeviceDriver/XInput/XInput.cpp
     ${SRC}/USBDevice/DeviceDriver/XboxOG/XboxOG_GP.cpp
