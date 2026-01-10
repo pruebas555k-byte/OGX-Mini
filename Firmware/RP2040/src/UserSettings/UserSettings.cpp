@@ -23,6 +23,9 @@ namespace ButtonCombo {
     static constexpr uint32_t XBOXOG_XR = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB, Gamepad::DPAD_RIGHT);
     static constexpr uint32_t PSCLASSIC = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_A);
     static constexpr uint32_t WEBAPP    = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB | Gamepad::BUTTON_RB);
+
+    // NUEVO: Combo para PS4 (START + Y, sin dpad)
+    static constexpr uint32_t PS4       = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_Y);
 };
 
 static constexpr DeviceDriverType VALID_DRIVER_TYPES[] = {
@@ -33,6 +36,7 @@ static constexpr DeviceDriverType VALID_DRIVER_TYPES[] = {
     DeviceDriverType::PS3,
     DeviceDriverType::PSCLASSIC, 
     DeviceDriverType::WEBAPP,
+    DeviceDriverType::PS4,           // NUEVO: PS4 también válido en 4CH
     #if defined(XREMOTE_ROM_AVAILABLE)
     DeviceDriverType::XBOXOG_XR,
     #endif
@@ -41,6 +45,7 @@ static constexpr DeviceDriverType VALID_DRIVER_TYPES[] = {
     DeviceDriverType::DINPUT, 
     DeviceDriverType::SWITCH, 
     DeviceDriverType::WEBAPP,
+    DeviceDriverType::PS4,           // NUEVO: PS4 válido cuando hay >1 gamepad
 
 #else // MAX_GAMEPADS == 1
     DeviceDriverType::XBOXOG, 
@@ -51,6 +56,7 @@ static constexpr DeviceDriverType VALID_DRIVER_TYPES[] = {
     DeviceDriverType::PS3,
     DeviceDriverType::PSCLASSIC, 
     DeviceDriverType::XINPUT,
+    DeviceDriverType::PS4,           // NUEVO: PS4 válido en modo 1 gamepad
     #if defined(XREMOTE_ROM_AVAILABLE)
     DeviceDriverType::XBOXOG_XR,
     #endif
@@ -63,7 +69,8 @@ struct ComboMap {
     DeviceDriverType driver; 
 };
 
-static constexpr std::array<ComboMap, 9> BUTTON_COMBO_MAP = {{
+// Aumentamos a 10 entradas por el nuevo PS4
+static constexpr std::array<ComboMap, 10> BUTTON_COMBO_MAP = {{
     { ButtonCombo::XBOXOG,    DeviceDriverType::XBOXOG    },
     { ButtonCombo::XBOXOG_SB, DeviceDriverType::XBOXOG_SB },
     { ButtonCombo::XBOXOG_XR, DeviceDriverType::XBOXOG_XR },
@@ -72,7 +79,8 @@ static constexpr std::array<ComboMap, 9> BUTTON_COMBO_MAP = {{
     { ButtonCombo::SWITCH,    DeviceDriverType::SWITCH    },
     { ButtonCombo::XINPUT,    DeviceDriverType::XINPUT    },
     { ButtonCombo::PS3,       DeviceDriverType::PS3       },
-    { ButtonCombo::PSCLASSIC, DeviceDriverType::PSCLASSIC }
+    { ButtonCombo::PSCLASSIC, DeviceDriverType::PSCLASSIC },
+    { ButtonCombo::PS4,       DeviceDriverType::PS4       }  // NUEVO: PS4
 }};
 
 const std::string UserSettings::INIT_FLAG_KEY()
