@@ -10,9 +10,10 @@ namespace PS4
     static constexpr uint8_t COUNTER_MASK = 0x0F;
     static constexpr uint8_t DPAD_MASK    = 0x0F;
 
+    // Botones y D-Pad tal y como los usa el host (USBHost/HostDriver/PS4.cpp)
     namespace Buttons0
     {
-        // D-Pad codificado en el nibble bajo
+        // D-Pad en el nibble bajo
         static constexpr uint8_t DPAD_UP         = 0x00;
         static constexpr uint8_t DPAD_UP_RIGHT   = 0x01;
         static constexpr uint8_t DPAD_RIGHT      = 0x02;
@@ -65,7 +66,7 @@ namespace PS4
         uint8_t trigger_l;
         uint8_t trigger_r;
 
-        uint8_t reserved2[48];
+        uint8_t reserved2[50];
 
         InReport()
         {
