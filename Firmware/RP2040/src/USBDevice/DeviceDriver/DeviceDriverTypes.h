@@ -13,6 +13,7 @@ enum class DeviceDriverType : uint8_t
     PS3,
     DINPUT,
     PSCLASSIC,
+    PS4,
     SWITCH,
     WEBAPP = 100,
     UART_BRIDGE
