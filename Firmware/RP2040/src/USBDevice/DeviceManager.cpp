@@ -10,14 +10,15 @@
 #include "USBDevice/DeviceDriver/XboxOG/XboxOG_SB.h"
 #include "USBDevice/DeviceDriver/XboxOG/XboxOG_XR.h"
 #include "USBDevice/DeviceDriver/WebApp/WebApp.h"
+#include "USBDevice/DeviceDriver/PS4/PS4.h"      // <<< NUEVO
 #include "USBDevice/DeviceManager.h"
 
 #if defined(CONFIG_EN_UART_BRIDGE)
 #include "USBDevice/DeviceDriver/UARTBridge/UARTBridge.h"
 #endif // defined(CONFIG_EN_UART_BRIDGE)
 
-void DeviceManager::initialize_driver(  DeviceDriverType driver_type, 
-                                        Gamepad(&gamepads)[MAX_GAMEPADS]) {
+void DeviceManager::initialize_driver(DeviceDriverType driver_type, 
+                                      Gamepad(&gamepads)[MAX_GAMEPADS]) {
     //TODO: Put gamepad setup in the drivers themselves
     bool has_analog = false; 
     
@@ -26,37 +27,52 @@ void DeviceManager::initialize_driver(  DeviceDriverType driver_type,
             has_analog = true;
             device_driver_ = std::make_unique<DInputDevice>();
             break;
+
         case DeviceDriverType::PS3:
             has_analog = true;
             device_driver_ = std::make_unique<PS3Device>();
             break;
+
         case DeviceDriverType::PSCLASSIC:
             device_driver_ = std::make_unique<PSClassicDevice>();
             break;
+
         case DeviceDriverType::SWITCH:
             device_driver_ = std::make_unique<SwitchDevice>();
             break;
+
         case DeviceDriverType::XINPUT:
             device_driver_ = std::make_unique<XInputDevice>();
             break;
+
         case DeviceDriverType::XBOXOG:
             has_analog = true;
             device_driver_ = std::make_unique<XboxOGDevice>();
             break;
+
         case DeviceDriverType::XBOXOG_SB:
             device_driver_ = std::make_unique<XboxOGSBDevice>();
             break;
+
         case DeviceDriverType::XBOXOG_XR:
             device_driver_ = std::make_unique<XboxOGXRDevice>();
             break;
+
         case DeviceDriverType::WEBAPP:
             device_driver_ = std::make_unique<WebAppDevice>();
             break;
+
+        case DeviceDriverType::PS4:                     // <<< NUEVO
+            has_analog = true;                          // sticks + triggers analógicos
+            device_driver_ = std::make_unique<PS4Device>();
+            break;
+
 #if defined(CONFIG_EN_UART_BRIDGE)
         case DeviceDriverType::UART_BRIDGE:
             device_driver_ = std::make_unique<UARTBridgeDevice>();
             break;
 #endif //defined(CONFIG_EN_UART_BRIDGE)
+
         default:
             return;
     }
