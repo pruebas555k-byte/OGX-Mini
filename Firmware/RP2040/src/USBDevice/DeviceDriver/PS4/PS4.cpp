@@ -30,19 +30,45 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         report_in_ = PS4Dev::InReport{};
 
         // --------------------------------------------------------------------
-        // DPAD -> Hat (usa el proxy report_in_.hat en vez de PS4Dev::setHat)
+        // DPAD -> Hat  (usa InReport::setHat(), ya no report_in_.hat)
         // --------------------------------------------------------------------
         switch (gp_in.dpad)
         {
-            case Gamepad::DPAD_UP:          report_in_.hat = PS4Dev::Hat::UP;         break;
-            case Gamepad::DPAD_UP_RIGHT:    report_in_.hat = PS4Dev::Hat::UP_RIGHT;   break;
-            case Gamepad::DPAD_RIGHT:       report_in_.hat = PS4Dev::Hat::RIGHT;      break;
-            case Gamepad::DPAD_DOWN_RIGHT:  report_in_.hat = PS4Dev::Hat::DOWN_RIGHT; break;
-            case Gamepad::DPAD_DOWN:        report_in_.hat = PS4Dev::Hat::DOWN;       break;
-            case Gamepad::DPAD_DOWN_LEFT:   report_in_.hat = PS4Dev::Hat::DOWN_LEFT;  break;
-            case Gamepad::DPAD_LEFT:        report_in_.hat = PS4Dev::Hat::LEFT;       break;
-            case Gamepad::DPAD_UP_LEFT:     report_in_.hat = PS4Dev::Hat::UP_LEFT;    break;
-            default:                        report_in_.hat = PS4Dev::Hat::CENTER;     break;
+            case Gamepad::DPAD_UP:
+                report_in_.setHat(PS4Dev::Hat::UP);
+                break;
+
+            case Gamepad::DPAD_UP_RIGHT:
+                report_in_.setHat(PS4Dev::Hat::UP_RIGHT);
+                break;
+
+            case Gamepad::DPAD_RIGHT:
+                report_in_.setHat(PS4Dev::Hat::RIGHT);
+                break;
+
+            case Gamepad::DPAD_DOWN_RIGHT:
+                report_in_.setHat(PS4Dev::Hat::DOWN_RIGHT);
+                break;
+
+            case Gamepad::DPAD_DOWN:
+                report_in_.setHat(PS4Dev::Hat::DOWN);
+                break;
+
+            case Gamepad::DPAD_DOWN_LEFT:
+                report_in_.setHat(PS4Dev::Hat::DOWN_LEFT);
+                break;
+
+            case Gamepad::DPAD_LEFT:
+                report_in_.setHat(PS4Dev::Hat::LEFT);
+                break;
+
+            case Gamepad::DPAD_UP_LEFT:
+                report_in_.setHat(PS4Dev::Hat::UP_LEFT);
+                break;
+
+            default:
+                report_in_.setHat(PS4Dev::Hat::CENTER);
+                break;
         }
 
         // --------------------------------------------------------------------
@@ -51,23 +77,35 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         uint16_t buttons = 0;
 
         // Face buttons
-        if (gp_in.buttons & Gamepad::BUTTON_A)     buttons |= PS4Dev::Buttons::CROSS;     // A -> X (Cruz)
-        if (gp_in.buttons & Gamepad::BUTTON_B)     buttons |= PS4Dev::Buttons::CIRCLE;    // B -> Círculo
-        if (gp_in.buttons & Gamepad::BUTTON_X)     buttons |= PS4Dev::Buttons::SQUARE;    // X -> Cuadrado
-        if (gp_in.buttons & Gamepad::BUTTON_Y)     buttons |= PS4Dev::Buttons::TRIANGLE;  // Y -> Triángulo
+        if (gp_in.buttons & Gamepad::BUTTON_A)
+            buttons |= PS4Dev::Buttons::CROSS;      // A -> X (Cruz)
+        if (gp_in.buttons & Gamepad::BUTTON_B)
+            buttons |= PS4Dev::Buttons::CIRCLE;     // B -> Círculo
+        if (gp_in.buttons & Gamepad::BUTTON_X)
+            buttons |= PS4Dev::Buttons::SQUARE;     // X -> Cuadrado
+        if (gp_in.buttons & Gamepad::BUTTON_Y)
+            buttons |= PS4Dev::Buttons::TRIANGLE;   // Y -> Triángulo
 
         // Hombros / sticks
-        if (gp_in.buttons & Gamepad::BUTTON_LB)    buttons |= PS4Dev::Buttons::L1;
-        if (gp_in.buttons & Gamepad::BUTTON_RB)    buttons |= PS4Dev::Buttons::R1;
-        if (gp_in.buttons & Gamepad::BUTTON_L3)    buttons |= PS4Dev::Buttons::L3;
-        if (gp_in.buttons & Gamepad::BUTTON_R3)    buttons |= PS4Dev::Buttons::R3;
+        if (gp_in.buttons & Gamepad::BUTTON_LB)
+            buttons |= PS4Dev::Buttons::L1;
+        if (gp_in.buttons & Gamepad::BUTTON_RB)
+            buttons |= PS4Dev::Buttons::R1;
+        if (gp_in.buttons & Gamepad::BUTTON_L3)
+            buttons |= PS4Dev::Buttons::L3;
+        if (gp_in.buttons & Gamepad::BUTTON_R3)
+            buttons |= PS4Dev::Buttons::R3;
 
         // Centrales
-        if (gp_in.buttons & Gamepad::BUTTON_BACK)  buttons |= PS4Dev::Buttons::SHARE;
-        if (gp_in.buttons & Gamepad::BUTTON_START) buttons |= PS4Dev::Buttons::OPTIONS;
-        if (gp_in.buttons & Gamepad::BUTTON_SYS)   buttons |= PS4Dev::Buttons::PS;
-        // El "misc" lo usamos como TOUCHPAD, no como CROSS.
-        if (gp_in.buttons & Gamepad::BUTTON_MISC)  buttons |= PS4Dev::Buttons::TOUCHPAD;
+        if (gp_in.buttons & Gamepad::BUTTON_BACK)
+            buttons |= PS4Dev::Buttons::SHARE;
+        if (gp_in.buttons & Gamepad::BUTTON_START)
+            buttons |= PS4Dev::Buttons::OPTIONS;
+        if (gp_in.buttons & Gamepad::BUTTON_SYS)
+            buttons |= PS4Dev::Buttons::PS;
+        // El "misc" lo usamos como TOUCHPAD
+        if (gp_in.buttons & Gamepad::BUTTON_MISC)
+            buttons |= PS4Dev::Buttons::TOUCHPAD;
 
         // --------------------------------------------------------------------
         // TRIGGERS: digital + analógico
@@ -102,7 +140,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         report_in_.joystick_rx = Scale::int16_to_uint8(gp_in.joystick_rx);
         report_in_.joystick_ry = Scale::int16_to_uint8(gp_in.joystick_ry);
 
-        // Ahora sí aplicamos el bitfield con el helper nuevo
+        // Aplica el bitfield de botones con el helper del InReport
         report_in_.setButtons(buttons);
     }
 
@@ -116,10 +154,11 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
 
     if (tud_hid_ready())
     {
-        // OJO: aquí seguimos mandando report_id = 0 porque nuestro InReport
-        // ya incluye todos los bytes tal cual los define el descriptor.
+        // IMPORTANTE:
+        // - Nuestro InReport YA incluye el report_id como primer byte.
+        // - Por eso aquí usamos report_id = 0, para que TinyUSB no inserte otro.
         tud_hid_report(
-            0, // si en tu REPORT_DESCRIPTORS tienes 0x85,0x01 quítalo o cambia esto.
+            0,
             reinterpret_cast<uint8_t*>(&report_in_),
             sizeof(PS4Dev::InReport)
         );
