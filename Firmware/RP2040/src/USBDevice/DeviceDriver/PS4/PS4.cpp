@@ -87,26 +87,56 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     const bool squareFinal = baseSquare || macroActive;
     const bool circleFinal = baseCircle || macroActive;
 
-    report_in_.buttonWest  = squareFinal ? 1 : 0;              // Square
-    report_in_.buttonEast  = circleFinal ? 1 : 0;              // Circle
+    report_in_.buttonWest  = squareFinal ? 1 : 0;               // Square
+    report_in_.buttonEast  = circleFinal ? 1 : 0;               // Circle
     report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross
     report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0; // Triangle
 
-    // ------------------ Hombros / Triggers (rotación) ------------------
-    const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0;
-    const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0;
-    const bool physL2 = gp_in.trigger_l;
-    const bool physR2 = gp_in.trigger_r;
+    // ------------------ Hombros / Triggers (REMAPPING) ------------------
+    const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0; // L1 físico
+    const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0; // R1 físico
+    const bool physL2 = gp_in.trigger_l;                 // L2 físico (digital)
+    const bool physR2 = gp_in.trigger_r;                 // R2 físico (digital)
 
-    // R1 → R2, R2 → L2, L2 → R1 (L1 se queda igual)
-    report_in_.buttonL1 = physL1 ? 1 : 0;
-    report_in_.buttonR1 = physL2 ? 1 : 0;   // L2 se ve como R1
-    report_in_.buttonL2 = physR2 ? 1 : 0;   // R2 se ve como L2
-    report_in_.buttonR2 = physR1 ? 1 : 0;   // R1 se ve como R2
+    // Queremos:
+    //  - R1 físico  → R2 (botón + eje)
+    //  - R2 físico  → L2 (botón + eje)
+    //  - L2 físico  → R1 (solo botón, sin eje trigger)
+    bool   virtL1 = physL1;
+    bool   virtR1 = false;
+    bool   virtL2 = false;
+    bool   virtR2 = false;
+    uint8_t trigL = 0;
+    uint8_t trigR = 0;
 
-    // Ejes analógicos de L2 / R2 según el nuevo mapa
-    report_in_.leftTrigger  = physR2 ? 0xFF : 0x00;  // ahora L2 = trigger derecho físico
-    report_in_.rightTrigger = physL2 ? 0xFF : 0x00;  // R2 = trigger izquierdo físico
+    // R1 físico => R2 virtual (botón + trigger derecho)
+    if (physR1)
+    {
+        virtR2 = true;
+        trigR  = 0xFF;
+    }
+
+    // R2 físico => L2 virtual (botón + trigger izquierdo)
+    if (physR2)
+    {
+        virtL2 = true;
+        trigL  = 0xFF;
+    }
+
+    // L2 físico => R1 virtual (solo botón, SIN eje)
+    if (physL2)
+    {
+        virtR1 = true;
+        // NO tocamos trigL / trigR aquí → así no aprieta R2
+    }
+
+    report_in_.buttonL1 = virtL1 ? 1 : 0;
+    report_in_.buttonR1 = virtR1 ? 1 : 0;
+    report_in_.buttonL2 = virtL2 ? 1 : 0;
+    report_in_.buttonR2 = virtR2 ? 1 : 0;
+
+    report_in_.leftTrigger  = trigL;
+    report_in_.rightTrigger = trigR;
 
     // ------------------ Sticks pulsados ------------------
     report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
