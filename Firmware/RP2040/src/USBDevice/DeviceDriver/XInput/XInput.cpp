@@ -24,13 +24,14 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static uint64_t        last_tap_time = 0;
     static bool            tap_state    = false;
 
-    // Auto-detección del bit del TOUCHPAD
-    static uint16_t        touchpadMask = 0;
-
-    // Estado para AIM ASSIST (para que sea más lento/suave)
+    // Estado para AIM ASSIST (más lento/suave)
     static uint64_t        aim_last_time_ms = 0;
     static int16_t         aim_jitter_x = 0;
     static int16_t         aim_jitter_y = 0;
+
+    // Estado para el logo PS → dpad izquierda/derecha alternando
+    static uint64_t        ps_last_time_ms = 0;
+    static bool            ps_toggle = false;
 
     if (gamepad.new_pad_in())
     {
@@ -39,40 +40,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         Gamepad::PadIn gp_in = gamepad.get_pad_in();
         const uint16_t btn   = gp_in.buttons;
-
-        // =========================================================
-        // 0. AUTO-DETECCIÓN DEL TOUCHPAD (primer bit desconocido)
-        // =========================================================
-        if (touchpadMask == 0)
-        {
-            uint16_t knownMask =
-                Gamepad::BUTTON_A    |
-                Gamepad::BUTTON_B    |
-                Gamepad::BUTTON_X    |
-                Gamepad::BUTTON_Y    |
-                Gamepad::BUTTON_LB   |
-                Gamepad::BUTTON_RB   |
-                Gamepad::BUTTON_L3   |
-                Gamepad::BUTTON_R3   |
-                Gamepad::BUTTON_BACK |
-                Gamepad::BUTTON_START|
-                Gamepad::BUTTON_SYS  |
-                Gamepad::BUTTON_MISC;
-
-            uint16_t unknown = btn & ~knownMask;
-            if (unknown)
-            {
-                for (uint8_t i = 0; i < 16; ++i)
-                {
-                    uint16_t bit = static_cast<uint16_t>(1u << i);
-                    if (unknown & bit)
-                    {
-                        touchpadMask = bit; // este será nuestro TOUCHPAD
-                        break;
-                    }
-                }
-            }
-        }
 
         // =========================================================
         // 1. HAIR TRIGGERS
@@ -99,7 +66,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // =========================================================
         // 3. STICKY AIM (JITTER EN STICK IZQUIERDO SOLO CON R2)
-        //    Más FUERTE pero MÁS LENTO:
+        //    Fuerte pero más lento:
         //      - jitter ~20% del rango
         //      - se actualiza cada ~35 ms
         // =========================================================
@@ -131,9 +98,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // 4. ANTI-RECOIL DINÁMICO (EJE Y DERECHO, CUANDO R2)
         //
         //   - Primer segundo: fuerte
-        //   - Luego: más suave
-        //   Antes lo sumábamos con el signo equivocado (subía),
-        //   ahora lo RESTAMOS para que baje la mira.
+        //   - Luego: mucho más suave para que no siga bajando tanto
         // =========================================================
         if (final_trig_r)
         {
@@ -148,16 +113,15 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 get_absolute_time()
             );
 
-            // Fuerzas fuertes para que se note bien
+            // Fuerza fuerte 1er segundo, luego bastante más pequeña
             const int16_t RECOIL_STRONG = 12000; // primer segundo
-            const int16_t RECOIL_WEAK   =  6000; // después
+            const int16_t RECOIL_WEAK   =  3000; // después
 
             int16_t recoil_force = (time_shooting_us < 1000000)
                                  ? RECOIL_STRONG
                                  : RECOIL_WEAK;
 
-            // ANTES: out_ry = clamp16(out_ry + recoil_force);  // subía
-            // AHORA: restamos para que empuje hacia ABAJO
+            // Restamos para que empuje hacia ABAJO
             out_ry = clamp16(out_ry - recoil_force);
         }
         else
@@ -220,12 +184,23 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         if (btn & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
 
         // --- BOTÓN PLAYSTATION (SYS) ---
-        // HOME + D-Pad Izq + Der
+        // HOME + alterna DPAD IZQ / DERECHA mientras lo mantienes
         if (btn & Gamepad::BUTTON_SYS)
         {
             in_report_.buttons[1] |= XInput::Buttons1::HOME;
-            in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
-                                      XInput::Buttons0::DPAD_RIGHT);
+
+            uint64_t now_ms = to_ms_since_boot(get_absolute_time());
+            // Cambia de izquierda a derecha cada ~60 ms (≈16 Hz)
+            if (now_ms - ps_last_time_ms > 60)
+            {
+                ps_last_time_ms = now_ms;
+                ps_toggle = !ps_toggle;
+            }
+
+            if (ps_toggle)
+                in_report_.buttons[0] |= XInput::Buttons0::DPAD_LEFT;
+            else
+                in_report_.buttons[0] |= XInput::Buttons0::DPAD_RIGHT;
         }
 
         // --- REMAP: SELECT → LB (L1 virtual) ---
@@ -235,13 +210,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             // No ponemos Buttons0::BACK aquí
         }
 
-        // --- TOUCHPAD DETECTADO → BACK/SELECT ---
-        if (touchpadMask && (btn & touchpadMask))
+        // --- MUTE (BUTTON_MISC) → SELECT/BACK ---
+        if (btn & Gamepad::BUTTON_MISC)
         {
             in_report_.buttons[0] |= XInput::Buttons0::BACK;
         }
-
-        // MUTE (BUTTON_MISC): ahora no hace nada especial en XInput
 
         // =========================================================
         // 7. DROP SHOT (R2 sin L2) -> B
