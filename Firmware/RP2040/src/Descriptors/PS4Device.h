@@ -95,8 +95,8 @@ namespace PS4Dev
         0x00,        // bDeviceSubClass
         0x00,        // bDeviceProtocol
         0x40,        // bMaxPacketSize0 64
-        0x34, 0x12,  // idVendor 0x054C (Sony) - ¡Correcto!
-        0x01, 0x20,  // idProduct 0x05C4 (DualShock 4 v1) - ¡Cambiado!
+        0x4C, 0x05,  // idVendor 0x054C (Sony) - ¡Correcto!
+        0xC4, 0x05,  // idProduct 0x05C4 (DualShock 4 v1) - ¡Cambiado!
         0x00, 0x01,  // bcdDevice
         0x01,        // iManufacturer
         0x02,        // iProduct
