@@ -69,16 +69,23 @@ namespace PS4Dev
         uint8_t  trigger_r;        // R2 analógico
         
         // Datos adicionales que espera un DS4 real
-        uint16_t timestamp;        // contador de tiempo
+        uint8_t  timestamp_lo;     // timestamp byte bajo
+        uint8_t  timestamp_hi;     // timestamp byte alto
         uint8_t  battery;          // nivel de batería
         
-        int16_t  gyro_x;           // giroscopio X
-        int16_t  gyro_y;           // giroscopio Y
-        int16_t  gyro_z;           // giroscopio Z
+        uint8_t  gyro_x_lo;        // giroscopio X (low byte)
+        uint8_t  gyro_x_hi;        // giroscopio X (high byte)
+        uint8_t  gyro_y_lo;        // giroscopio Y (low byte)
+        uint8_t  gyro_y_hi;        // giroscopio Y (high byte)
+        uint8_t  gyro_z_lo;        // giroscopio Z (low byte)
+        uint8_t  gyro_z_hi;        // giroscopio Z (high byte)
         
-        int16_t  accel_x;          // acelerómetro X
-        int16_t  accel_y;          // acelerómetro Y
-        int16_t  accel_z;          // acelerómetro Z
+        uint8_t  accel_x_lo;       // acelerómetro X (low byte)
+        uint8_t  accel_x_hi;       // acelerómetro X (high byte)
+        uint8_t  accel_y_lo;       // acelerómetro Y (low byte)
+        uint8_t  accel_y_hi;       // acelerómetro Y (high byte)
+        uint8_t  accel_z_lo;       // acelerómetro Z (low byte)
+        uint8_t  accel_z_hi;       // acelerómetro Z (high byte)
         
         uint8_t  reserved[5];      // bytes reservados
         
@@ -107,13 +114,19 @@ namespace PS4Dev
             trigger_l = 0;
             trigger_r = 0;
             
-            timestamp = 0;
+            timestamp_lo = 0;
+            timestamp_hi = 0;
             battery = 0xFF; // batería llena
             
             // Sensores en reposo
-            gyro_x = gyro_y = gyro_z = 0;
-            accel_x = accel_y = 0;
-            accel_z = 8192; // gravedad en Z
+            gyro_x_lo = gyro_x_hi = 0;
+            gyro_y_lo = gyro_y_hi = 0;
+            gyro_z_lo = gyro_z_hi = 0;
+            
+            accel_x_lo = accel_x_hi = 0;
+            accel_y_lo = accel_y_hi = 0;
+            accel_z_lo = 0x00;  // gravedad Z
+            accel_z_hi = 0x20;  // = 8192
             
             num_touches = 0;
         }
