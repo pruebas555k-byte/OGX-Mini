@@ -129,6 +129,7 @@ namespace PS4Dev
         }
         
         // Función helper para setear botones desde el formato anterior
+        // Compatibilidad con código anterior que usa .buttons
         void setButtons(uint16_t btn)
         {
             // Los primeros 4 bits de buttons1 son el HAT (D-pad)
@@ -154,11 +155,25 @@ namespace PS4Dev
                       ((btn & Buttons::TOUCHPAD) ? 0x02 : 0);
         }
         
+        // Propiedad helper para compatibilidad con código anterior
+        uint16_t& buttons = *reinterpret_cast<uint16_t*>(&buttons1);
+        
+        // Propiedad helper para .hat
+        uint8_t getHat() const { return buttons1 & 0x0F; }
         void setHat(uint8_t hat_value)
         {
             // Preservar botones, actualizar solo HAT (bits 0-3)
             buttons1 = (buttons1 & 0xF0) | (hat_value & 0x0F);
         }
+        
+        // Propiedad compatible con acceso directo a .hat
+        struct HatProxy {
+            InReport& parent;
+            HatProxy(InReport& p) : parent(p) {}
+            operator uint8_t() const { return parent.getHat(); }
+            HatProxy& operator=(uint8_t val) { parent.setHat(val); return *this; }
+        };
+        HatProxy hat{*this};
     };
     static_assert(sizeof(InReport) == 64, "PS4Dev::InReport debe ser 64 bytes");
     #pragma pack(pop)
@@ -170,6 +185,14 @@ namespace PS4Dev
     static const char STRING_MANUFACTURER[]    = "Sony Interactive Entertainment";
     static const char STRING_PRODUCT[]         = "Wireless Controller";
     static const char STRING_VERSION[]         = "1.0";
+    
+    // Array de punteros para compatibilidad
+    static const char* const STRING_DESCRIPTORS[] = {
+        reinterpret_cast<const char*>(STRING_LANGUAGE),
+        STRING_MANUFACTURER,
+        STRING_PRODUCT,
+        STRING_VERSION
+    };
 
     // ---------------------------------
     // Descriptor de dispositivo
