@@ -33,7 +33,7 @@ namespace PS4Dev
     // Botones especiales
     static constexpr uint32_t PS       = 1 << 16; // B16
     static constexpr uint32_t TOUCHPAD = 1 << 17; // B17
-    
+    }
     // Hat: 0–7 direcciones, 8 = centrado
     namespace Hat
     {
