@@ -1,6 +1,6 @@
 #include <cstring>
 #include <cstdlib>        // rand()
-#include "pico/time.h"    // absolute_time, time_diff, etc.
+#include "pico/time.h"    // absolute_time, to_ms_since_boot, etc.
 
 #include "USBDevice/DeviceDriver/XInput/tud_xinput/tud_xinput.h"
 #include "USBDevice/DeviceDriver/XInput/XInput.h"
@@ -28,6 +28,10 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static uint64_t        aim_last_time_ms = 0;
     static int16_t         aim_jitter_x = 0;
     static int16_t         aim_jitter_y = 0;
+
+    // Estado para el logo PS → dpad izquierda/derecha alternando
+    static uint64_t        ps_last_time_ms = 0;
+    static bool            ps_toggle = false;
 
     if (gamepad.new_pad_in())
     {
@@ -62,39 +66,46 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // =========================================================
         // 3. STICKY AIM (JITTER EN STICK IZQUIERDO SOLO CON R2)
-        //
-        //   - Solo si el stick está CERCA DEL CENTRO
-        //   - Si empujas fuerte el stick, NO hay jitter.
+        //    - Solo si el stick está cerca del centro (apuntar fino)
+        //    - Si das máximo a un lado, NO mete jitter
+        //    - Jitter fuerte pero más lento
         // =========================================================
         if (final_trig_r)   // solo cuando disparas con R2
         {
-            // Zona de "apuntar fino" (cerca del centro)
-            const int16_t AIM_ZONE = 12000; // ~36% del rango
+            uint64_t now_ms = to_ms_since_boot(get_absolute_time());
 
-            int16_t ax = (out_lx >= 0) ? out_lx : -out_lx;
-            int16_t ay = (out_ly >= 0) ? out_ly : -out_ly;
+            // Distancia al centro del stick izquierdo (módulo^2)
+            int32_t mag2 =
+                static_cast<int32_t>(out_lx) * out_lx +
+                static_cast<int32_t>(out_ly) * out_ly;
 
-            if (ax < AIM_ZONE && ay < AIM_ZONE)
+            // Radio de "zona centro" (para aim assist)
+            const int16_t  CENTER_MAX     = 14000;              // ~40% del rango
+            const int32_t  CENTER_MAX2    = CENTER_MAX * CENTER_MAX;
+
+            if (mag2 < CENTER_MAX2)
             {
-                // Solo aquí metemos jitter
-                uint64_t now_ms = to_ms_since_boot(get_absolute_time());
-
-                // Cambiamos el vector de jitter solo cada ~35 ms
-                if (now_ms - aim_last_time_ms > 35)
+                // Estamos en zona de micro-movimientos → aplicar aim assist
+                // Cambiamos el vector de jitter cada ~40 ms aprox.
+                if (now_ms - aim_last_time_ms > 40)
                 {
                     aim_last_time_ms = now_ms;
 
-                    const int16_t JITTER = 6000; // fuerza del aim assist
-                    aim_jitter_x = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
-                    aim_jitter_y = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
+                    const int16_t JITTER = 7000; // fuerza del aim assist
+                    aim_jitter_x = static_cast<int16_t>(
+                        (rand() % (2 * JITTER + 1)) - JITTER
+                    );
+                    aim_jitter_y = static_cast<int16_t>(
+                        (rand() % (2 * JITTER + 1)) - JITTER
+                    );
                 }
 
-                out_lx = clamp16(out_lx + aim_jitter_x);
-                out_ly = clamp16(out_ly + aim_jitter_y);
+                out_lx = clamp16(static_cast<int16_t>(out_lx + aim_jitter_x));
+                out_ly = clamp16(static_cast<int16_t>(out_ly + aim_jitter_y));
             }
             else
             {
-                // Fuera de la zona fina, sin jitter
+                // Stick lejos del centro → sin jitter
                 aim_jitter_x = 0;
                 aim_jitter_y = 0;
             }
@@ -109,8 +120,9 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 4. ANTI-RECOIL DINÁMICO (EJE Y DERECHO, CUANDO R2)
         //
-        //   - Primer 1.5 s: 12000
-        //   - Después: 10000 y se queda así
+        //   - Primer 1.5 segundos: muy fuerte (12000)
+        //   - Después: 10000 y se queda en ese valor
+        //   Restamos para empujar siempre hacia ABAJO.
         // =========================================================
         if (final_trig_r)
         {
@@ -120,19 +132,20 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 shot_start_time = get_absolute_time();
             }
 
+            absolute_time_t now = get_absolute_time();
             int64_t time_shooting_us = absolute_time_diff_us(
                 shot_start_time,
-                get_absolute_time()
+                now
             );
 
-            const int16_t RECOIL_STRONG = 12000; // hasta 1.5 s
-            const int16_t RECOIL_AFTER  = 10000; // después de 1.5 s
+            const int16_t RECOIL_STRONG = 12000;  // hasta 1.5 s
+            const int16_t RECOIL_AFTER  = 10000;  // después de 1.5 s
 
             int16_t recoil_force =
                 (time_shooting_us < 1500000) ? RECOIL_STRONG : RECOIL_AFTER;
 
-            // Restamos para empujar la mira hacia ABAJO
-            out_ry = clamp16(out_ry - recoil_force);
+            // Restamos para que empuje la mira hacia ABAJO
+            out_ry = clamp16(static_cast<int16_t>(out_ry - recoil_force));
         }
         else
         {
@@ -140,7 +153,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // =========================================================
-        // 5. DPAD NORMAL
+        // 5. DPAD
         // =========================================================
         switch (gp_in.dpad)
         {
@@ -178,28 +191,46 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // L1 físico: SOLO macro (abajo), NO manda LB normal aquí
 
         // R1 normal
-        if (btn & Gamepad::BUTTON_RB)    in_report_.buttons[1] |= XInput::Buttons1::RB;
+        if (btn & Gamepad::BUTTON_RB)
+            in_report_.buttons[1] |= XInput::Buttons1::RB;
 
         // A/B/X/Y
-        if (btn & Gamepad::BUTTON_X)     in_report_.buttons[1] |= XInput::Buttons1::X;
-        if (btn & Gamepad::BUTTON_A)     in_report_.buttons[1] |= XInput::Buttons1::A;
-        if (btn & Gamepad::BUTTON_Y)     in_report_.buttons[1] |= XInput::Buttons1::Y;
-        if (btn & Gamepad::BUTTON_B)     in_report_.buttons[1] |= XInput::Buttons1::B;
+        if (btn & Gamepad::BUTTON_X) in_report_.buttons[1] |= XInput::Buttons1::X;
+        if (btn & Gamepad::BUTTON_A) in_report_.buttons[1] |= XInput::Buttons1::A;
+        if (btn & Gamepad::BUTTON_Y) in_report_.buttons[1] |= XInput::Buttons1::Y;
+        if (btn & Gamepad::BUTTON_B) in_report_.buttons[1] |= XInput::Buttons1::B;
 
         // Sticks pulsados
-        if (btn & Gamepad::BUTTON_L3)    in_report_.buttons[0] |= XInput::Buttons0::L3;
-        if (btn & Gamepad::BUTTON_R3)    in_report_.buttons[0] |= XInput::Buttons0::R3;
+        if (btn & Gamepad::BUTTON_L3) in_report_.buttons[0] |= XInput::Buttons0::L3;
+        if (btn & Gamepad::BUTTON_R3) in_report_.buttons[0] |= XInput::Buttons0::R3;
 
         // START
-        if (btn & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
+        if (btn & Gamepad::BUTTON_START)
+            in_report_.buttons[0] |= XInput::Buttons0::START;
 
         // --- BOTÓN PLAYSTATION (SYS) ---
-        // HOME + DPAD IZQ + DERECHA MANTENIDAS
+        // HOME + alterna DPAD IZQ / DERECHA mientras lo mantienes
         if (btn & Gamepad::BUTTON_SYS)
         {
             in_report_.buttons[1] |= XInput::Buttons1::HOME;
-            in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
-                                      XInput::Buttons0::DPAD_RIGHT);
+
+            uint64_t now_ms = to_ms_since_boot(get_absolute_time());
+            // Cambia de izquierda a derecha cada ~60 ms (≈16 Hz)
+            if (now_ms - ps_last_time_ms > 60)
+            {
+                ps_last_time_ms = now_ms;
+                ps_toggle = !ps_toggle;
+            }
+
+            if (ps_toggle)
+                in_report_.buttons[0] |= XInput::Buttons0::DPAD_LEFT;
+            else
+                in_report_.buttons[0] |= XInput::Buttons0::DPAD_RIGHT;
+        }
+        else
+        {
+            // al soltar PS puedes resetear el estado si quieres
+            ps_toggle = false;
         }
 
         // --- REMAP: SELECT → LB (L1 virtual) ---
@@ -274,15 +305,18 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             tud_remote_wakeup();
         }
 
-        tud_xinput::send_report(reinterpret_cast<uint8_t*>(&in_report_),
-                                sizeof(XInput::InReport));
+        tud_xinput::send_report(
+            reinterpret_cast<uint8_t*>(&in_report_),
+            sizeof(XInput::InReport)
+        );
     }
 
     // =============================================================
     // 11. RUMBLE (igual que el original)
     // =============================================================
-    if (tud_xinput::receive_report(reinterpret_cast<uint8_t*>(&out_report_),
-                                   sizeof(XInput::OutReport)) &&
+    if (tud_xinput::receive_report(
+            reinterpret_cast<uint8_t*>(&out_report_),
+            sizeof(XInput::OutReport)) &&
         out_report_.report_id == XInput::OutReportID::RUMBLE)
     {
         Gamepad::PadOut gp_out;
@@ -290,4 +324,78 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         gp_out.rumble_r = out_report_.rumble_r;
         gamepad.set_pad_out(gp_out);
     }
+}
+
+// =================================================================
+// Callbacks que el linker pedía (vtable de XInputDevice)
+// =================================================================
+
+uint16_t XInputDevice::get_report_cb(uint8_t itf,
+                                     uint8_t report_id,
+                                     hid_report_type_t report_type,
+                                     uint8_t *buffer,
+                                     uint16_t reqlen)
+{
+    (void)itf;
+    (void)report_id;
+    (void)report_type;
+    (void)reqlen;
+
+    std::memcpy(buffer, &in_report_, sizeof(XInput::InReport));
+    return sizeof(XInput::InReport);
+}
+
+void XInputDevice::set_report_cb(uint8_t itf,
+                                 uint8_t report_id,
+                                 hid_report_type_t report_type,
+                                 uint8_t const *buffer,
+                                 uint16_t bufsize)
+{
+    (void)itf;
+    (void)report_id;
+    (void)report_type;
+    (void)buffer;
+    (void)bufsize;
+}
+
+bool XInputDevice::vendor_control_xfer_cb(uint8_t rhport,
+                                          uint8_t stage,
+                                          tusb_control_request_t const *request)
+{
+    (void)rhport;
+    (void)stage;
+    (void)request;
+    return false;
+}
+
+const uint16_t * XInputDevice::get_descriptor_string_cb(uint8_t index,
+                                                        uint16_t langid)
+{
+    (void)langid;
+    const char *value =
+        reinterpret_cast<const char*>(XInput::DESC_STRING[index]);
+    return get_string_descriptor(value, index);
+}
+
+const uint8_t * XInputDevice::get_descriptor_device_cb()
+{
+    return XInput::DESC_DEVICE;
+}
+
+const uint8_t * XInputDevice::get_hid_descriptor_report_cb(uint8_t itf)
+{
+    (void)itf;
+    // XInput real no usa un HID report clásico aquí
+    return nullptr;
+}
+
+const uint8_t * XInputDevice::get_descriptor_configuration_cb(uint8_t index)
+{
+    (void)index;
+    return XInput::DESC_CONFIGURATION;
+}
+
+const uint8_t * XInputDevice::get_descriptor_device_qualifier_cb()
+{
+    return nullptr;
 }
