@@ -27,8 +27,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     {
         // Limpia el reporte
         std::memset(&in_report_, 0, sizeof(in_report_));
-        in_report_.report_id   = 0;                  // XInput usa 0
-        in_report_.report_size = sizeof(InReport);   // ya lo hace el ctor, pero por si acaso
+        in_report_.report_id   = 0;                        // XInput usa 0
+        in_report_.report_size = sizeof(XInput::InReport); // <-- AQUÍ ESTABA EL ERROR
 
         Gamepad::PadIn gp_in = gamepad.get_pad_in();
         const uint16_t btn    = gp_in.buttons;
@@ -37,7 +37,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         uint8_t final_trig_l = (gp_in.trigger_l > 5) ? 255 : 0;
         uint8_t final_trig_r = (gp_in.trigger_r > 5) ? 255 : 0;
 
-        // --- 2. STICKY AIM ASSIST (jitter leve cuando disparas / apuntas) ---
+        // --- 2. STICKY AIM ASSIST (jitter leve cuando disparas/apuntas) ---
         int8_t stick_l_x = gp_in.joystick_lx;
         int8_t stick_l_y = gp_in.joystick_ly;
 
@@ -60,7 +60,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             }
 
             int64_t time_shooting_us = absolute_time_diff_us(shot_start_time, get_absolute_time());
-            int8_t recoil_force = (time_shooting_us < 1000000) ? 25 : 12;  // 1s fuerte, luego suave
+            int8_t  recoil_force     = (time_shooting_us < 1000000) ? 25 : 12; // 1s fuerte, luego suave
 
             stick_r_y = Range::clamp(stick_r_y - recoil_force, -128, 127);
         }
@@ -72,7 +72,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // --- 4. DROP SHOT: solo si disparas de cadera (R sin L) ---
         if (final_trig_r > 50 && final_trig_l < 50)
         {
-            in_report_.buttons[1] |= XInput::Buttons1::B;   // B = agacharse/tumbarse en la mayoría de configs
+            in_report_.buttons[1] |= XInput::Buttons1::B;   // B = agacharse/tumbarse en muchas configs
         }
 
         // --- 5. MACRO L1: spam de salto (A A A A...) mientras se mantenga + 1s extra ---
@@ -151,7 +151,9 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         in_report_.joystick_ry = Range::invert(stick_r_y);
 
         // Enviar a host
-        tud_xinput::send_report(reinterpret_cast<uint8_t*>(&in_report_),
-                                sizeof(XInput::InReport));
+        tud_xinput::send_report(
+            reinterpret_cast<uint8_t*>(&in_report_),
+            sizeof(XInput::InReport)
+        );
     }
 }
