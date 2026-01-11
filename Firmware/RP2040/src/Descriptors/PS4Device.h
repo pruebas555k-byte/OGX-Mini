@@ -10,7 +10,7 @@ namespace PS4Dev
     static constexpr uint8_t JOYSTICK_MID = 0x80;
 
     // ---------------------------------
-    // Botones (16 bits) - tu mapeo
+    // Botones (16 bits) – mapping B0..B13
     // ---------------------------------
     namespace Buttons
     {
@@ -21,8 +21,8 @@ namespace PS4Dev
 
         static constexpr uint16_t L1        = 1u << 4;   // B4
         static constexpr uint16_t R1        = 1u << 5;   // B5
-        static constexpr uint16_t L2_DIG    = 1u << 6;   // B6
-        static constexpr uint16_t R2_DIG    = 1u << 7;   // B7
+        static constexpr uint16_t L2_DIG    = 1u << 6;   // B6 (botón L2)
+        static constexpr uint16_t R2_DIG    = 1u << 7;   // B7 (botón R2)
 
         static constexpr uint16_t SHARE     = 1u << 8;   // B8
         static constexpr uint16_t OPTIONS   = 1u << 9;   // B9
@@ -45,156 +45,61 @@ namespace PS4Dev
         static constexpr uint8_t DOWN_LEFT  = 0x05;
         static constexpr uint8_t LEFT       = 0x06;
         static constexpr uint8_t UP_LEFT    = 0x07;
-        static constexpr uint8_t CENTER     = 0x08;  // valor "sin pulsar"
+        static constexpr uint8_t CENTER     = 0x08; // se mapea como "no pulsado"
     }
 
     // ---------------------------------
-    // Reporte de ENTRADA (64 bytes)
+    // Reporte de ENTRADA – 10 bytes
+    //  ID(1) + botones(2) + hat(1) + 4 ejes(4) + 2 triggers(2)
     // ---------------------------------
     #pragma pack(push, 1)
     struct InReport
     {
-        uint8_t  report_id;        // 0x01
-        uint8_t  joystick_lx;      // stick izquierdo X
-        uint8_t  joystick_ly;      // stick izquierdo Y
-        uint8_t  joystick_rx;      // stick derecho X
-        uint8_t  joystick_ry;      // stick derecho Y
-        
-        uint8_t  buttons1;         // hat + algunos botones
-        uint8_t  buttons2;         // más botones
-        uint8_t  buttons3;         // PS, TOUCHPAD, etc.
-        
-        uint8_t  trigger_l;        // L2 analógico
-        uint8_t  trigger_r;        // R2 analógico
-        
-        // Datos "tipo DS4" (fake, pero el host no se queja)
-        uint8_t  timestamp_lo;     
-        uint8_t  timestamp_hi;     
-        uint8_t  battery;          
-        
-        uint8_t  gyro_x_lo;
-        uint8_t  gyro_x_hi;
-        uint8_t  gyro_y_lo;
-        uint8_t  gyro_y_hi;
-        uint8_t  gyro_z_lo;
-        uint8_t  gyro_z_hi;
-        
-        uint8_t  accel_x_lo;
-        uint8_t  accel_x_hi;
-        uint8_t  accel_y_lo;
-        uint8_t  accel_y_hi;
-        uint8_t  accel_z_lo;
-        uint8_t  accel_z_hi;
-        
-        uint8_t  reserved[5];
-        uint8_t  ext_status;
-        uint8_t  reserved2[2];
-        uint8_t  num_touches;
-        uint8_t  touch_data[9];
-        uint8_t  padding[21];      // completa hasta 64 bytes
+        uint8_t  report_id;   // siempre 1
+        uint16_t buttons;     // 16 botones
+        uint8_t  hat;         // 0–7 direcciones, 8 = centrado
+        uint8_t  joystick_lx; // 0–255
+        uint8_t  joystick_ly; // 0–255
+        uint8_t  joystick_rx; // 0–255
+        uint8_t  joystick_ry; // 0–255
+        uint8_t  trigger_l;   // L2 analógico 0–255
+        uint8_t  trigger_r;   // R2 analógico 0–255
 
         InReport()
         {
             std::memset(this, 0, sizeof(InReport));
-            report_id   = 0x01;
-            joystick_lx = JOYSTICK_MID;
-            joystick_ly = JOYSTICK_MID;
-            joystick_rx = JOYSTICK_MID;
-            joystick_ry = JOYSTICK_MID;
-            
-            // D-pad centrado (bits 0-3 del buttons1)
-            // Hat = 0x08 (CENTER)
-            buttons1 = 0x08;
-            buttons2 = 0x00;
-            buttons3 = 0x00;
-            
-            trigger_l = 0;
-            trigger_r = 0;
-            
-            timestamp_lo = 0;
-            timestamp_hi = 0;
-            battery = 0xFF; // batería llena fake
-            
-            // Sensores en reposo
-            gyro_x_lo = gyro_x_hi = 0;
-            gyro_y_lo = gyro_y_hi = 0;
-            gyro_z_lo = gyro_z_hi = 0;
-            
-            accel_x_lo = accel_x_hi = 0;
-            accel_y_lo = accel_y_hi = 0;
-            accel_z_lo = 0x00;
-            accel_z_hi = 0x20;  // valor arbitrario
-            
-            num_touches = 0;
-        }
-
-        // -----------------------------
-        // Helpers "internos" del struct
-        // -----------------------------
-
-        // Set de botones desde un uint16_t (tu mapeo Buttons::)
-        void setButtons(uint16_t btn)
-        {
-            // Los primeros 4 bits de buttons1 son el HAT (D-pad)
-            uint8_t hat = buttons1 & 0x0F;
-            
-            // Face buttons en la parte alta de buttons1
-            buttons1 = hat |
-                      ((btn & Buttons::SQUARE)   ? 0x10 : 0) |
-                      ((btn & Buttons::CROSS)    ? 0x20 : 0) |
-                      ((btn & Buttons::CIRCLE)   ? 0x40 : 0) |
-                      ((btn & Buttons::TRIANGLE) ? 0x80 : 0);
-            
-            // Siguientes 8 botones en buttons2
-            buttons2 = ((btn & Buttons::L1)      ? 0x01 : 0) |
-                       ((btn & Buttons::R1)      ? 0x02 : 0) |
-                       ((btn & Buttons::L2_DIG)  ? 0x04 : 0) |
-                       ((btn & Buttons::R2_DIG)  ? 0x08 : 0) |
-                       ((btn & Buttons::SHARE)   ? 0x10 : 0) |
-                       ((btn & Buttons::OPTIONS) ? 0x20 : 0) |
-                       ((btn & Buttons::L3)      ? 0x40 : 0) |
-                       ((btn & Buttons::R3)      ? 0x80 : 0);
-            
-            // PS y TOUCHPAD en buttons3 (dos primeros bits)
-            buttons3 = ((btn & Buttons::PS)       ? 0x01 : 0) |
-                       ((btn & Buttons::TOUCHPAD) ? 0x02 : 0);
-        }
-
-        // Obtener hat actual (bajos 4 bits de buttons1)
-        uint8_t getHat() const
-        {
-            return buttons1 & 0x0F;
-        }
-
-        // Poner hat sin tocar los botones (solo bits 0-3)
-        void setHat(uint8_t hat_value)
-        {
-            buttons1 = (buttons1 & 0xF0) | (hat_value & 0x0F);
+            report_id    = 0x01;
+            hat          = Hat::CENTER;
+            joystick_lx  = JOYSTICK_MID;
+            joystick_ly  = JOYSTICK_MID;
+            joystick_rx  = JOYSTICK_MID;
+            joystick_ry  = JOYSTICK_MID;
+            trigger_l    = 0;
+            trigger_r    = 0;
         }
     };
-    static_assert(sizeof(InReport) == 64, "PS4Dev::InReport debe medir 64 bytes");
     #pragma pack(pop)
 
-    // ---------------------------------
-    // Helpers externos (los que usa PS4.cpp)
-    // ---------------------------------
+    static_assert(sizeof(InReport) == 10, "PS4Dev::InReport debe medir 10 bytes");
 
-    inline void setButtons(InReport& rep, uint16_t btn)
+    // Helpers para que PS4.cpp pueda usarlos
+    inline void setHat(InReport& r, uint8_t hat_value)
     {
-        rep.setButtons(btn);
+        r.hat = hat_value;
     }
 
-    inline void setHat(InReport& rep, uint8_t hat)
+    inline void setButtons(InReport& r, uint16_t btn)
     {
-        rep.setHat(hat);
+        r.buttons = btn;
     }
 
     // ---------------------------------
     // Strings USB
+    // (el index 0 lo maneja TinyUSB como LANGID, estos son 1..3)
     // ---------------------------------
     static const uint8_t STRING_LANGUAGE[]     = { 0x09, 0x04 }; // EN-US
-    static const uint8_t STRING_MANUFACTURER[] = "Sony";
-    static const uint8_t STRING_PRODUCT[]      = "Wireless Controller";
+    static const uint8_t STRING_MANUFACTURER[] = "Open Stick Community";
+    static const uint8_t STRING_PRODUCT[]      = "GP2040-CE (PS4)";
     static const uint8_t STRING_VERSION[]      = "1.0";
 
     static const uint8_t* STRING_DESCRIPTORS[] __attribute__((unused)) =
@@ -207,7 +112,8 @@ namespace PS4Dev
 
     // ---------------------------------
     // Descriptor de dispositivo
-    // VID/PID = 054C:09CC (DualShock 4 v2)
+    // Usamos VID/PID del modo PS4 de GP2040 (Razer Panthera)
+    //   VID = 0x1532, PID = 0x0401
     // ---------------------------------
     static const uint8_t DEVICE_DESCRIPTORS[] =
     {
@@ -218,8 +124,8 @@ namespace PS4Dev
         0x00,        // bDeviceSubClass
         0x00,        // bDeviceProtocol
         0x40,        // bMaxPacketSize0 64
-        0x4C, 0x05,  // idVendor  0x054C (Sony)
-        0xCC, 0x09,  // idProduct 0x09CC (DS4 v2)
+        0x32, 0x15,  // idVendor  0x1532 (Razer)
+        0x01, 0x04,  // idProduct 0x0401 (Panthera)
         0x00, 0x01,  // bcdDevice 1.00
         0x01,        // iManufacturer
         0x02,        // iProduct
@@ -228,17 +134,45 @@ namespace PS4Dev
     };
 
     // ---------------------------------
-    // Descriptor HID (Input 64 bytes)
+    // Descriptor HID del reporte de 10 bytes
     // ---------------------------------
     static const uint8_t REPORT_DESCRIPTORS[] =
     {
         0x05, 0x01,       // Usage Page (Generic Desktop)
         0x09, 0x05,       // Usage (Game Pad)
         0xA1, 0x01,       // Collection (Application)
-        
+
         0x85, 0x01,       //   Report ID (1)
-        
-        // Sticks (X, Y, Z, Rz)
+
+        // 16 botones (2 bytes)
+        0x05, 0x09,       //   Usage Page (Button)
+        0x19, 0x01,       //   Usage Minimum (1)
+        0x29, 0x10,       //   Usage Maximum (16)
+        0x15, 0x00,       //   Logical Minimum (0)
+        0x25, 0x01,       //   Logical Maximum (1)
+        0x75, 0x01,       //   Report Size (1)
+        0x95, 0x10,       //   Report Count (16)
+        0x81, 0x02,       //   Input (Data,Var,Abs)
+
+        // Hat switch (D-Pad)
+        0x05, 0x01,       //   Usage Page (Generic Desktop)
+        0x09, 0x39,       //   Usage (Hat switch)
+        0x15, 0x00,       //   Logical Minimum (0)
+        0x25, 0x07,       //   Logical Maximum (7)
+        0x35, 0x00,       //   Physical Minimum (0)
+        0x46, 0x3B, 0x01, //   Physical Maximum (315)
+        0x65, 0x14,       //   Unit (Degrees)
+        0x75, 0x04,       //   Report Size (4)
+        0x95, 0x01,       //   Report Count (1)
+        0x81, 0x42,       //   Input (Data,Var,Abs,Null State)
+
+        // Relleno 4 bits para completar el byte del Hat
+        0x75, 0x04,       //   Report Size (4)
+        0x95, 0x01,       //   Report Count (1)
+        0x81, 0x03,       //   Input (Const,Var,Abs)
+
+        // 4 ejes: LX, LY, RX, RY (0–255)
+        0x05, 0x01,       //   Usage Page (Generic Desktop)
         0x09, 0x30,       //   Usage (X)
         0x09, 0x31,       //   Usage (Y)
         0x09, 0x32,       //   Usage (Z)
@@ -250,36 +184,8 @@ namespace PS4Dev
         0x75, 0x08,       //   Report Size (8)
         0x95, 0x04,       //   Report Count (4)
         0x81, 0x02,       //   Input (Data,Var,Abs)
-        
-        // Botones (14 bits) + 2 bits relleno
-        0x05, 0x09,       //   Usage Page (Button)
-        0x19, 0x01,       //   Usage Minimum (1)
-        0x29, 0x0E,       //   Usage Maximum (14)
-        0x15, 0x00,       //   Logical Minimum (0)
-        0x25, 0x01,       //   Logical Maximum (1)
-        0x75, 0x01,       //   Report Size (1)
-        0x95, 0x0E,       //   Report Count (14)
-        0x81, 0x02,       //   Input (Data,Var,Abs)
 
-        // Relleno 2 bits (para completar byte)
-        0x75, 0x01,       //   Report Size (1)
-        0x95, 0x02,       //   Report Count (2)
-        0x81, 0x03,       //   Input (Const,Var,Abs)
-        
-        // Hat Switch (ocupamos los 4 bits bajos de buttons1 en nuestro helper)
-        0x05, 0x01,       //   Usage Page (Generic Desktop)
-        0x09, 0x39,       //   Usage (Hat switch)
-        0x15, 0x00,       //   Logical Minimum (0)
-        0x25, 0x07,       //   Logical Maximum (7)
-        0x35, 0x00,       //   Physical Minimum (0)
-        0x46, 0x3B, 0x01, //   Physical Maximum (315)
-        0x65, 0x14,       //   Unit (Degrees)
-        0x75, 0x04,       //   Report Size (4)
-        0x95, 0x01,       //   Report Count (1)
-        0x81, 0x42,       //   Input (Data,Var,Abs,Null)
-        
-        // Triggers analógicos (L2 / R2)
-        0x65, 0x00,       //   Unit (None)
+        // Triggers L2/R2 analógicos (0–255)
         0x05, 0x02,       //   Usage Page (Simulation Controls)
         0x09, 0xC4,       //   Usage (Accelerator) -> L2
         0x09, 0xC5,       //   Usage (Brake)       -> R2
@@ -288,14 +194,7 @@ namespace PS4Dev
         0x75, 0x08,       //   Report Size (8)
         0x95, 0x02,       //   Report Count (2)
         0x81, 0x02,       //   Input (Data,Var,Abs)
-        
-        // Resto hasta 64 bytes: vendor (sensores, touch, etc.)
-        0x06, 0x00, 0xFF, //   Usage Page (Vendor)
-        0x09, 0x20,       //   Usage (Vendor)
-        0x75, 0x08,       //   Report Size (8)
-        0x95, 0x36,       //   Report Count (54)
-        0x81, 0x02,       //   Input (Data,Var,Abs)
-        
+
         0xC0              // End Collection
     };
 
@@ -311,7 +210,7 @@ namespace PS4Dev
         0x01,        // bNumInterfaces 1
         0x01,        // bConfigurationValue
         0x00,        // iConfiguration
-        0xC0,        // bmAttributes (Self powered, Remote wakeup)
+        0x80,        // bmAttributes (Bus powered)
         0xFA,        // bMaxPower 500mA
 
         // Interface 0
@@ -319,7 +218,7 @@ namespace PS4Dev
         0x04,        // bDescriptorType (Interface)
         0x00,        // bInterfaceNumber 0
         0x00,        // bAlternateSetting
-        0x02,        // bNumEndpoints 2
+        0x02,        // bNumEndpoints 2 (IN + OUT)
         0x03,        // bInterfaceClass (HID)
         0x00,        // bInterfaceSubClass
         0x00,        // bInterfaceProtocol
@@ -331,9 +230,9 @@ namespace PS4Dev
         0x11, 0x01,  // bcdHID 1.11
         0x00,        // bCountryCode
         0x01,        // bNumDescriptors
-        0x22,        // bDescriptorType (Report)
-        static_cast<uint8_t>(sizeof(REPORT_DESCRIPTORS) & 0xFF),
-        static_cast<uint8_t>((sizeof(REPORT_DESCRIPTORS) >> 8) & 0xFF),
+        0x22,        // bDescriptorType[0] (Report)
+        sizeof(REPORT_DESCRIPTORS) & 0xFF,
+        (sizeof(REPORT_DESCRIPTORS) >> 8) & 0xFF,
 
         // Endpoint IN (device -> host)
         0x07,        // bLength
@@ -341,15 +240,15 @@ namespace PS4Dev
         0x81,        // bEndpointAddress (EP1 IN)
         0x03,        // bmAttributes (Interrupt)
         0x40, 0x00,  // wMaxPacketSize 64
-        0x05,        // bInterval 5ms
+        0x01,        // bInterval 1ms
 
-        // Endpoint OUT (host -> device)
+        // Endpoint OUT (host -> device) - no lo usamos pero lo dejamos
         0x07,        // bLength
         0x05,        // bDescriptorType (Endpoint)
         0x02,        // bEndpointAddress (EP2 OUT)
         0x03,        // bmAttributes (Interrupt)
         0x40, 0x00,  // wMaxPacketSize 64
-        0x05,        // bInterval 5ms
+        0x01,        // bInterval 1ms
     };
 
 } // namespace PS4Dev
