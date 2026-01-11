@@ -18,7 +18,7 @@ namespace PS4Dev
         static constexpr uint16_t L1        = 1 << 4;  // Button 5
         static constexpr uint16_t R1        = 1 << 5;  // Button 6
         static constexpr uint16_t  PS    = 1 << 6;  // Button 7
-        static constexpr uint16_t  TOUCHPAD        = 1 << 7;  // Button 8
+        static constexpr uint16_t  TOUCHPAD        = 1 << 17;  // Button 8
         static constexpr uint16_t SHARE     = 1 << 8;  // Button 9
         static constexpr uint16_t OPTIONS   = 1 << 9;  // Button 10
         static constexpr uint16_t  L3        = 1 << 10; // Button 11
