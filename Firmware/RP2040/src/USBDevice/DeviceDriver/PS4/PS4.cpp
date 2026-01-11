@@ -68,9 +68,10 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         report_in_.joystick_rx = Scale::int16_to_uint8(gp_in.joystick_rx);
         report_in_.joystick_ry = Scale::int16_to_uint8(gp_in.joystick_ry);
 
-        // --- Triggers analógicos ---
-        report_in_.trigger_l = gp_in.trigger_l; // 0–255 si el backend los soporta
-        report_in_.trigger_r = gp_in.trigger_r;
+        // Triggers: 0 = suelto, 0xFF = totalmente apretado
+        report_in_.trigger_l = gp_in.trigger_l ? 0xFF : 0x00;
+        report_in_.trigger_r = gp_in.trigger_r ? 0xFF : 0x00;
+
     }
 
     if (tud_suspended())
@@ -154,5 +155,6 @@ const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
 {
     return nullptr;
 }
+
 
 
