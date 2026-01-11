@@ -52,7 +52,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 Gamepad::BUTTON_BACK |
                 Gamepad::BUTTON_START|
                 Gamepad::BUTTON_SYS  |
-                Gamepad::BUTTON_MISC;   // MUTE fuera del auto-detector
+                Gamepad::BUTTON_MISC;
 
             uint16_t unknown = btn & ~knownMask;
             if (unknown)
@@ -80,8 +80,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // =========================================================
         // 2. STICKS BASE EN ESPACIO "FINAL" (el que ve el juego)
-        //    - X tal cual
-        //    - Y ya invertido con Range::invert (como hacía el original)
         // =========================================================
         int16_t out_lx = gp_in.joystick_lx;
         int16_t out_ly = Range::invert(gp_in.joystick_ly);
@@ -96,11 +94,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // =========================================================
         // 3. STICKY AIM (JITTER EN STICK IZQUIERDO SOLO CON R2)
-        //    - Más suave que antes (~5-6% del rango)
+        //    Más suave (≈ 3% del rango)
         // =========================================================
         if (final_trig_r)   // solo cuando disparas con R2
         {
-            const int16_t JITTER = 1800; // cambia este valor si quieres más/menos
+            const int16_t JITTER = 1000; // ajusta si lo quieres más fuerte/suave
             int16_t jitter_x = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
             int16_t jitter_y = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
 
@@ -111,10 +109,10 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 4. ANTI-RECOIL DINÁMICO (EJE Y DERECHO, CUANDO R2)
         //
-        //   - Primer segundo: fuerza 25
-        //   - Luego: fuerza 12
-        //   Aquí lo escala a int16 y lo suma sobre out_ry (YA invertido),
-        //   así que sí o sí tiene que mover la mira hacia abajo.
+        //   - Primer segundo: fuerte
+        //   - Luego: más suave
+        //   Se suma sobre out_ry (YA invertido), así que tiene que
+        //   mover sí o sí la mira con R2 apretado.
         // =========================================================
         if (final_trig_r)
         {
@@ -124,18 +122,20 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 shot_start_time = get_absolute_time();
             }
 
-            int64_t time_shooting_us = absolute_time_diff_us(shot_start_time,
-                                                             get_absolute_time());
+            int64_t time_shooting_us = absolute_time_diff_us(
+                shot_start_time,
+                get_absolute_time()
+            );
 
-            // fuerza en espacio int16
-            const int16_t RECOIL_STRONG = 25 * 120; // ~3000
-            const int16_t RECOIL_WEAK   = 12 * 120; // ~1440
+            // Fuerzas fuertes para que se note bien
+            const int16_t RECOIL_STRONG = 12000; // primer segundo
+            const int16_t RECOIL_WEAK   =  6000; // después
 
             int16_t recoil_force = (time_shooting_us < 1000000)
                                  ? RECOIL_STRONG
                                  : RECOIL_WEAK;
 
-            // suponemos que +Y es "abajo" en el juego
+            // Suponiendo que +Y es “abajo” en el juego
             out_ry = clamp16(out_ry + recoil_force);
         }
         else
@@ -197,8 +197,14 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // START
         if (btn & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
 
-        // HOME / PS
-        if (btn & Gamepad::BUTTON_SYS)   in_report_.buttons[1] |= XInput::Buttons1::HOME;
+        // --- BOTÓN PLAYSTATION (SYS) ---
+        // HOME + D-Pad Izq + Der (lo que querías en las flechas)
+        if (btn & Gamepad::BUTTON_SYS)
+        {
+            in_report_.buttons[1] |= XInput::Buttons1::HOME;
+            in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
+                                      XInput::Buttons0::DPAD_RIGHT);
+        }
 
         // --- REMAP: SELECT → LB (L1 virtual) ---
         if (btn & Gamepad::BUTTON_BACK)
@@ -213,12 +219,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             in_report_.buttons[0] |= XInput::Buttons0::BACK;
         }
 
-        // --- MUTE (BUTTON_MISC) → D-PAD IZQ + DER ---
-        if (btn & Gamepad::BUTTON_MISC)
-        {
-            in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
-                                      XInput::Buttons0::DPAD_RIGHT);
-        }
+        // MUTE (BUTTON_MISC): ahora no hace nada especial en XInput
 
         // =========================================================
         // 7. DROP SHOT (R2 sin L2) -> B
