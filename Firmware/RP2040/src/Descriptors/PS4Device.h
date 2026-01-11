@@ -10,21 +10,30 @@ namespace PS4Dev
 
     // Botones (16 bits)
     namespace Buttons
-    {
-        static constexpr uint16_t  CIRCLE    = 1 << 0;  // Button 1
-        static constexpr uint16_t SQUARE    = 1 << 1;  // Button 2
-        static constexpr uint16_t   CROSS  = 1 << 2;  // Button 3
-        static constexpr uint16_t TRIANGLE  = 1 << 3;  // Button 4
-        static constexpr uint16_t L1        = 1 << 4;  // Button 5
-        static constexpr uint16_t R1        = 1 << 5;  // Button 6
-        static constexpr uint16_t  PS    = 1 << 6;  // Button 7
-        static constexpr uint16_t  TOUCHPAD        = 1 << 17;  // Button 8
-        static constexpr uint16_t SHARE     = 1 << 8;  // Button 9
-        static constexpr uint16_t OPTIONS   = 1 << 9;  // Button 10
-        static constexpr uint16_t  L3        = 1 << 10; // Button 11
-        static constexpr uint16_t R3 = 1 << 11; // Button 12
-    }
+   namespace Buttons
+   {
+    // Los primeros 4 son los de acción
+    static constexpr uint32_t CROSS    = 1 << 0;  // B0 (Equis)
+    static constexpr uint32_t CIRCLE   = 1 << 1;  // B1 (Círculo)
+    static constexpr uint32_t SQUARE   = 1 << 2;  // B2 (Cuadrado)
+    static constexpr uint32_t TRIANGLE = 1 << 3;  // B3 (Triángulo)
 
+    // Gatillos superiores
+    static constexpr uint32_t L1       = 1 << 4;  // B4
+    static constexpr uint32_t R1       = 1 << 5;  // B5
+    static constexpr uint32_t L2       = 1 << 6;  // B6
+    static constexpr uint32_t R2       = 1 << 7;  // B7
+
+    // Botones de sistema
+    static constexpr uint32_t SHARE    = 1 << 8;  // B8
+    static constexpr uint32_t OPTIONS  = 1 << 9;  // B9
+    static constexpr uint32_t L3       = 1 << 10; // B10 (Click Stick Izq)
+    static constexpr uint32_t R3       = 1 << 11; // B11 (Click Stick Der)
+
+    // Botones especiales
+    static constexpr uint32_t PS       = 1 << 16; // B16
+    static constexpr uint32_t TOUCHPAD = 1 << 17; // B17
+    
     // Hat: 0–7 direcciones, 8 = centrado
     namespace Hat
     {
@@ -93,7 +102,7 @@ namespace PS4Dev
         0x00,        // bDeviceSubClass
         0x00,        // bDeviceProtocol
         0x40,        // bMaxPacketSize0 64
-        0x4C, 0x05,  // idVendor 0x054C (Sony) - ¡Correcto!
+        0x34, 0x12,  // idVendor 0x054C (Sony) - ¡Correcto!
         0x01, 0x20,  // idProduct 0x05C4 (DualShock 4 v1) - ¡Cambiado!
         0x00, 0x01,  // bcdDevice
         0x01,        // iManufacturer
