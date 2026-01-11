@@ -28,23 +28,23 @@ namespace PS4Dev {
     //  B14 -> libre
     //  B15 -> libre
     namespace Buttons {
-        static constexpr uint16_t CROSS     = 1u << 0;   // B0
-        static constexpr uint16_t CIRCLE    = 1u << 1;   // B1
-        static constexpr uint16_t SQUARE    = 1u << 2;   // B2
-        static constexpr uint16_t TRIANGLE  = 1u << 3;   // B3
+        // Re-mapeados para corregir la rotación:
+        static constexpr uint16_t SQUARE    = 1u << 0;   // Antes CROSS (Ahora B0 es Cuadrado)
+        static constexpr uint16_t CROSS     = 1u << 1;   // Antes CIRCLE (Ahora B1 es X)
+        static constexpr uint16_t CIRCLE    = 1u << 2;   // Antes SQUARE (Ahora B2 es Círculo)
+        
+        static constexpr uint16_t TRIANGLE  = 1u << 3;   // B3 (Se mantiene igual)
         static constexpr uint16_t L1        = 1u << 4;   // B4
         static constexpr uint16_t R1        = 1u << 5;   // B5
-        static constexpr uint16_t R2        = 1u << 6;   // B6 (digital)
-        static constexpr uint16_t L2        = 1u << 7;   // B7 (digital)
+        static constexpr uint16_t R2        = 1u << 6;   // B6
+        static constexpr uint16_t L2        = 1u << 7;   // B7
         static constexpr uint16_t SHARE     = 1u << 8;   // B8
         static constexpr uint16_t OPTIONS   = 1u << 9;   // B9
         static constexpr uint16_t L3        = 1u << 10;  // B10
         static constexpr uint16_t R3        = 1u << 11;  // B11
-        static constexpr uint16_t PS        = 1u << 12;  // B16
-        static constexpr uint16_t TOUCHPAD  = 1u << 13;  // B17
-        // bits 14 y 15 libres
+        static constexpr uint16_t PS        = 1u << 12;  // Mantenido como pediste
+        static constexpr uint16_t TOUCHPAD  = 1u << 13;  // Mantenido como pediste
     }
-
     // Hat: 0–7 direcciones, 8 = centrado
     namespace Hat {
         static constexpr uint8_t UP         = 0x00;
