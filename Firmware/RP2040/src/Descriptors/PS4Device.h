@@ -34,8 +34,8 @@ namespace PS4Dev {
         static constexpr uint16_t TRIANGLE  = 1u << 3;   // B3
         static constexpr uint16_t L1        = 1u << 4;   // B4
         static constexpr uint16_t R1        = 1u << 5;   // B5
-        static constexpr uint16_t L2        = 1u << 6;   // B6 (digital)
-        static constexpr uint16_t R2        = 1u << 7;   // B7 (digital)
+        static constexpr uint16_t R2        = 1u << 6;   // B6 (digital)
+        static constexpr uint16_t L2        = 1u << 7;   // B7 (digital)
         static constexpr uint16_t SHARE     = 1u << 8;   // B8
         static constexpr uint16_t OPTIONS   = 1u << 9;   // B9
         static constexpr uint16_t L3        = 1u << 10;  // B10
