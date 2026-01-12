@@ -18,7 +18,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static absolute_time_t shot_start_time;
     static bool            is_shooting = false;
 
-    // Macro L1 (spam jump)
+    // Macro L1 (spam jump A)
     static bool            jump_macro_active = false;
     static absolute_time_t jump_end_time;
     static uint64_t        last_tap_time = 0;
@@ -30,6 +30,20 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static int16_t         aim_jitter_y = 0;
     static uint8_t         aim_step     = 0;  // índice del patrón circular
 
+    // Auto-detección del botón PLAYSTATION (psMask)
+    static uint16_t        psMask = 0;
+
+    // Turbo R2 → A
+    static uint64_t        r2_last_toggle_ms = 0;
+    static bool            r2_turbo_state    = false;
+
+    // Turbo triángulo (Y) por doble toque
+    static uint64_t        y_last_press_time_ms = 0;
+    static bool            y_last_pressed       = false;
+    static bool            y_turbo_active       = false;
+    static uint64_t        y_turbo_last_ms      = 0;
+    static bool            y_turbo_state        = false;
+
     if (gamepad.new_pad_in())
     {
         // Reinicia todo el reporte (el ctor pone report_size)
@@ -37,6 +51,43 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         Gamepad::PadIn gp_in = gamepad.get_pad_in();
         const uint16_t btn   = gp_in.buttons;
+
+        // Tiempo actual en ms para todas las macros
+        uint64_t now_ms = to_ms_since_boot(get_absolute_time());
+
+        // =========================================================
+        // 0. AUTO-DETECCIÓN BOTÓN PS (primer bit desconocido)
+        //    TIP: la primera vez, aprieta el botón PS solo.
+        // =========================================================
+        if (psMask == 0)
+        {
+            uint16_t knownMask =
+                Gamepad::BUTTON_A    |
+                Gamepad::BUTTON_B    |
+                Gamepad::BUTTON_X    |
+                Gamepad::BUTTON_Y    |
+                Gamepad::BUTTON_LB   |
+                Gamepad::BUTTON_RB   |
+                Gamepad::BUTTON_L3   |
+                Gamepad::BUTTON_R3   |
+                Gamepad::BUTTON_BACK |
+                Gamepad::BUTTON_START|
+                Gamepad::BUTTON_MISC;    // mute
+
+            uint16_t unknown = btn & ~knownMask;
+            if (unknown)
+            {
+                for (uint8_t i = 0; i < 16; ++i)
+                {
+                    uint16_t bit = static_cast<uint16_t>(1u << i);
+                    if (unknown & bit)
+                    {
+                        psMask = bit;
+                        break;
+                    }
+                }
+            }
+        }
 
         // =========================================================
         // 1. HAIR TRIGGERS
@@ -69,7 +120,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         int32_t magL2 = sq(base_lx) + sq(base_ly);
         int32_t magR2 = sq(base_rx) + sq(base_ry);
 
-        // Deadzone para drift (aprox según tu foto)
+        // Deadzone para drift
         static const int16_t DZ_L  = 7000;                    // ~20% stick izq
         static const int32_t DZ_L2 = static_cast<int32_t>(DZ_L) * DZ_L;
 
@@ -108,8 +159,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
             if (final_trig_r && magL2 <= AIM_CENTER_MAX2)
             {
-                uint64_t now_ms = to_ms_since_boot(get_absolute_time());
-
                 // Cambiamos el vector cada ~35 ms
                 if (now_ms - aim_last_time_ms > 35)
                 {
@@ -185,7 +234,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 }
                 else
                 {
-                    // Lo estás moviendo mucho → no tocamos, evitamos bug raro
+                    // Lo estás moviendo mucho → no tocamos
                     out_ry = base_ry;
                 }
             }
@@ -237,11 +286,13 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // R1 normal
         if (btn & Gamepad::BUTTON_RB)    in_report_.buttons[1] |= XInput::Buttons1::RB;
 
-        // A/B/X/Y
+        // A/B/X/Y (sin turbo todavía)
         if (btn & Gamepad::BUTTON_X)     in_report_.buttons[1] |= XInput::Buttons1::X;
         if (btn & Gamepad::BUTTON_A)     in_report_.buttons[1] |= XInput::Buttons1::A;
-        if (btn & Gamepad::BUTTON_Y)     in_report_.buttons[1] |= XInput::Buttons1::Y;
         if (btn & Gamepad::BUTTON_B)     in_report_.buttons[1] |= XInput::Buttons1::B;
+
+        // Triángulo/Y: lo manejamos más abajo con lógica de turbo
+        bool y_pressed_now = (btn & Gamepad::BUTTON_Y) != 0;
 
         // Sticks pulsados
         if (btn & Gamepad::BUTTON_L3)    in_report_.buttons[0] |= XInput::Buttons0::L3;
@@ -250,9 +301,9 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // START
         if (btn & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
 
-        // --- BOTÓN PLAYSTATION (SYS) ---
-        // HOME + DPAD IZQ y DERECHA MANTENIDOS mientras lo pulses
-        if (btn & Gamepad::BUTTON_SYS)
+        // --- BOTÓN PLAYSTATION ---
+        // HOME + DPAD IZQ y DERECHA MANTENIDOS
+        if ( (psMask && (btn & psMask)) || (btn & Gamepad::BUTTON_SYS) )
         {
             in_report_.buttons[1] |= XInput::Buttons1::HOME;
             in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
@@ -263,7 +314,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         if (btn & Gamepad::BUTTON_BACK)
         {
             in_report_.buttons[1] |= XInput::Buttons1::LB;
-            // No ponemos Buttons0::BACK aquí
         }
 
         // --- MUTE (BUTTON_MISC) → SELECT/BACK ---
@@ -273,15 +323,77 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // =========================================================
-        // 7. DROP SHOT (R2 sin L2) -> B
+        // 7. DROP SHOT / TURBO R2: R2 SIN L2 → A TURBO
         // =========================================================
         if (final_trig_r && !final_trig_l)
         {
-            in_report_.buttons[1] |= XInput::Buttons1::B;
+            // Turbo A mientras mantienes solo R2
+            if (now_ms - r2_last_toggle_ms > 50) // ~20 pulsos/seg
+            {
+                r2_last_toggle_ms = now_ms;
+                r2_turbo_state    = !r2_turbo_state;
+            }
+            if (r2_turbo_state)
+            {
+                in_report_.buttons[1] |= XInput::Buttons1::A;
+            }
+        }
+        else
+        {
+            r2_turbo_state = false;
         }
 
         // =========================================================
-        // 8. MACRO L1 (LB físico) -> SPAM JUMP (A)
+        // 8. TURBO TRIÁNGULO (Y) POR DOBLE TOQUE
+        //    - 1 toque normal → Y normal
+        //    - doble toque < 300ms y dejas 2º apretado → turbo
+        // =========================================================
+        if (y_pressed_now && !y_last_pressed)
+        {
+            // Rising edge
+            if (now_ms - y_last_press_time_ms <= 300)
+            {
+                // Doble toque → activamos turbo
+                y_turbo_active  = true;
+                y_turbo_last_ms = now_ms;
+                y_turbo_state   = true;
+            }
+            y_last_press_time_ms = now_ms;
+        }
+
+        if (y_turbo_active)
+        {
+            if (!y_pressed_now)
+            {
+                // Soltaste el botón → apaga turbo
+                y_turbo_active = false;
+                y_turbo_state  = false;
+            }
+            else
+            {
+                if (now_ms - y_turbo_last_ms > 50) // ~20 pulsos/seg
+                {
+                    y_turbo_last_ms = now_ms;
+                    y_turbo_state   = !y_turbo_state;
+                }
+                if (y_turbo_state)
+                {
+                    in_report_.buttons[1] |= XInput::Buttons1::Y;
+                }
+            }
+        }
+        else
+        {
+            // Sin turbo → comportamiento normal
+            if (y_pressed_now)
+            {
+                in_report_.buttons[1] |= XInput::Buttons1::Y;
+            }
+        }
+        y_last_pressed = y_pressed_now;
+
+        // =========================================================
+        // 9. MACRO L1 (LB físico) -> SPAM JUMP (A)
         // =========================================================
         if (btn & Gamepad::BUTTON_LB)
         {
@@ -291,13 +403,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         if (jump_macro_active)
         {
-            uint64_t now = to_ms_since_boot(get_absolute_time());
-
-            // Velocidad del spam (50 ms ≈ 20 pulsos/seg)
-            if (now - last_tap_time > 50)
+            // usamos now_ms
+            if (now_ms - last_tap_time > 50)
             {
                 tap_state     = !tap_state;
-                last_tap_time = now;
+                last_tap_time = now_ms;
             }
 
             if (tap_state)
@@ -313,7 +423,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // =========================================================
-        // 9. ASIGNAR TRIGGERS Y STICKS FINALES
+        // 10. ASIGNAR TRIGGERS Y STICKS FINALES
         // =========================================================
         in_report_.trigger_l   = final_trig_l;
         in_report_.trigger_r   = final_trig_r;
@@ -324,7 +434,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         in_report_.joystick_ry = out_ry;
 
         // =========================================================
-        // 10. ENVIAR REPORTE XINPUT
+        // 11. ENVIAR REPORTE XINPUT
         // =========================================================
         if (tud_suspended())
         {
@@ -336,7 +446,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     }
 
     // =============================================================
-    // 11. RUMBLE (igual que el original)
+    // 12. RUMBLE (igual que el original)
     // =============================================================
     if (tud_xinput::receive_report(reinterpret_cast<uint8_t*>(&out_report_),
                                    sizeof(XInput::OutReport)) &&
