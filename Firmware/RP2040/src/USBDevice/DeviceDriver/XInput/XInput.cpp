@@ -263,7 +263,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             }
 
             // Solo empezamos el turbo después de 150 ms mantenido
-            if (now_ms - r2_press_time_ms >= 150)
+            if (now_ms - r2_press_time_ms >= 850)
             {
                 if (now_ms - r2_last_toggle_ms > 50) // ~20 pulsos/seg
                 {
