@@ -26,7 +26,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     static bool     mutePrev          = false;
     static uint32_t muteMacroTicks    = 0;
     // Suponiendo que process() se llama aprox. cada 1 ms.
-    static constexpr uint32_t MUTE_MACRO_DURATION_TICKS = 494;
+    static constexpr uint32_t MUTE_MACRO_DURATION_TICKS = 488;
 
     Gamepad::PadIn gp_in = gamepad.get_pad_in();
     const uint16_t btn   = gp_in.buttons;
@@ -238,6 +238,7 @@ const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
 {
     return nullptr;
 }
+
 
 
 
