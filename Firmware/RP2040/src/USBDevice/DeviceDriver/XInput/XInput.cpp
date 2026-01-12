@@ -30,22 +30,21 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static int16_t         aim_jitter_x = 0;
     static int16_t         aim_jitter_y = 0;
 
-    // Estado para drop-shot y R2 turbo
+    // Estado para R2 turbo
     static bool            prev_trig_l = false;
     static bool            prev_trig_r = false;
-    static bool            drop_can_trigger = false;
-
     static absolute_time_t r2_press_time;
-    static bool            r2_turbo_active = false;
+    static bool            r2_turbo_active  = false;
+    static bool            r2_turbo_state   = false;
     static uint64_t        r2_last_toggle_ms = 0;
-    static bool            r2_turbo_state  = false;
+    static bool            r2_turbo_allowed = false;   // solo si R2 empezó sin L2
 
     // Turbo triángulo (Y)
-    static bool            tri_turbo_active  = false;
-    static bool            tri_turbo_state   = false;
-    static uint64_t        tri_last_press_ms = 0;
+    static bool            tri_turbo_active   = false;
+    static bool            tri_turbo_state    = false;
+    static uint64_t        tri_last_press_ms  = 0;
     static uint64_t        tri_last_toggle_ms = 0;
-    static bool            tri_prev_pressed  = false;
+    static bool            tri_prev_pressed   = false;
 
     if (gamepad.new_pad_in())
     {
@@ -64,28 +63,22 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         uint8_t final_trig_l = trig_l_pressed ? 255 : 0;
         uint8_t final_trig_r = trig_r_pressed ? 255 : 0;
 
-        // ---- LÓGICA DE INICIO / FIN DE R2 (para drop-shot y turbo) ----
+        // ---- LÓGICA DE INICIO / FIN DE R2 (para turbo) ----
         if (trig_r_pressed && !prev_trig_r)
         {
-            // Drop-shot solo si R2 se presiona SIN L2
-            drop_can_trigger = !trig_l_pressed;
-
-            // Inicio de tiempo para turbo de R2
+            // Guardamos cuándo se empezó a apretar R2
             r2_press_time    = get_absolute_time();
             r2_turbo_active  = false;
             r2_turbo_state   = false;
+            // Turbo solo permitido si R2 empezó SIN L2
+            r2_turbo_allowed = !trig_l_pressed;
         }
 
-        // Si R2 se suelta, se resetea drop-shot
         if (!trig_r_pressed)
         {
-            drop_can_trigger = false;
-        }
-
-        // Si estando R2 presionado empiezas a apretar L2, se cancela drop-shot
-        if (trig_r_pressed && trig_l_pressed && !prev_trig_l)
-        {
-            drop_can_trigger = false;
+            r2_turbo_active  = false;
+            r2_turbo_state   = false;
+            r2_turbo_allowed = false;
         }
 
         prev_trig_l = trig_l_pressed;
@@ -276,7 +269,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // =========================================================
-        // 7. MACROS TURBO (A, Y) Y DROP-SHOT (B)
+        // 7. MACROS TURBO (A, Y) – SIN DROP-SHOT
         // =========================================================
         uint64_t now_ms = to_ms_since_boot(get_absolute_time());
 
@@ -285,8 +278,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         bool a_from_r2_turbo    = false;
 
         bool b_from_button      = (btn & Gamepad::BUTTON_B) != 0;
-        bool b_from_drop_shot   = false;
-
         bool x_from_button      = (btn & Gamepad::BUTTON_X) != 0;
         bool y_output           = false;
 
@@ -300,8 +291,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 if (now_ms - tri_last_press_ms <= 300)
                 {
                     // Doble toque rápido → activar turbo
-                    tri_turbo_active  = true;
-                    tri_turbo_state   = true;
+                    tri_turbo_active   = true;
+                    tri_turbo_state    = true;
                     tri_last_toggle_ms = now_ms;
                 }
                 else
@@ -339,10 +330,10 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // ---------- 7.2 R2 → A TURBO (DESPUÉS DE 0.85 s) ----------
-        if (trig_r_pressed)
+        if (trig_r_pressed && r2_turbo_allowed)
         {
-            static const int64_t R2_TURBO_DELAY_US  = 850000; // 0.85 s
-            static const uint64_t R2_TURBO_PERIOD_MS = 60;    // ≈16 Hz
+            static const int64_t  R2_TURBO_DELAY_US   = 850000; // 0.85 s
+            static const uint64_t R2_TURBO_PERIOD_MS  = 60;     // ≈16 Hz
 
             int64_t held_us = absolute_time_diff_us(
                 r2_press_time,
@@ -351,8 +342,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
             if (!r2_turbo_active && held_us >= R2_TURBO_DELAY_US)
             {
-                r2_turbo_active  = true;
-                r2_turbo_state   = true;
+                r2_turbo_active   = true;
+                r2_turbo_state    = true;
                 r2_last_toggle_ms = now_ms;
             }
 
@@ -367,19 +358,13 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
         else
         {
-            r2_turbo_active = false;
-            r2_turbo_state  = false;
+            r2_turbo_active  = false;
+            r2_turbo_state   = false;
         }
 
         a_from_r2_turbo = (r2_turbo_active && r2_turbo_state);
 
-        // ---------- 7.3 DROP-SHOT (B) SOLO SI R2 SE INICIÓ SIN L2 ----------
-        if (final_trig_r && drop_can_trigger)
-        {
-            b_from_drop_shot = true;
-        }
-
-        // ---------- 7.4 MACRO L1 (LB físico) → SPAM JUMP (A) ----------
+        // ---------- 7.3 MACRO L1 (LB físico) → SPAM JUMP (A) ----------
         // L1 NO manda LB normal, solo activa macro de A
         if (btn & Gamepad::BUTTON_LB)
         {
@@ -408,7 +393,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             }
         }
 
-        // ---------- 7.5 A/B/X/Y FINALES ----------
+        // ---------- 7.4 A/B/X/Y FINALES ----------
         if (x_from_button)
         {
             in_report_.buttons[1] |= XInput::Buttons1::X;
@@ -419,7 +404,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             in_report_.buttons[1] |= XInput::Buttons1::Y;
         }
 
-        if (b_from_button || b_from_drop_shot)
+        if (b_from_button)
         {
             in_report_.buttons[1] |= XInput::Buttons1::B;
         }
