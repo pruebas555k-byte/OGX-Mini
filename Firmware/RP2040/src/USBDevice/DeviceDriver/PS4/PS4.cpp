@@ -68,22 +68,23 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
 
     // ------------------------------------------------------------
     // Sticks analógicos (0-255) + TIRITÓN corto al apretar CUADRADO
+    // (AHORA EN ANÁLOGO IZQUIERDO)
     // ------------------------------------------------------------
     uint8_t lsx = Scale::int16_to_uint8(gp_in.joystick_lx);
     uint8_t lsy = Scale::int16_to_uint8(gp_in.joystick_ly);
     uint8_t rsx = Scale::int16_to_uint8(gp_in.joystick_rx);
     uint8_t rsy = Scale::int16_to_uint8(gp_in.joystick_ry);
 
-    // ---- TIRITÓN “micro flick” en Right Stick X al flanco de subida de Cuadrado ----
+    // ---- TIRITÓN “micro flick” en Left Stick X al flanco de subida de Cuadrado ----
     static bool            squarePrev     = false;
     static bool            jitterActive   = false;
     static absolute_time_t jitterStart;
 
-    static constexpr int32_t JITTER_US  = 22000; // duración total (15k-30k recomendado)
-    static constexpr int     JITTER_AMP = 12;    // intensidad (6-20 recomendado)
+    static constexpr int32_t JITTER_US  = 22000; // 22 ms (15k-30k recomendado)
+    static constexpr int     JITTER_AMP = 14;    // un poquito más fuerte
 
     // Solo cuando presionas CUADRADO (no mientras lo mantienes)
-    // (si quieres que NO se dispare cuando está activa la macro MUTE, deja el && !macroActive)
+    // Si NO quieres que se dispare durante la macro MUTE, deja el && !macroActive
     if (baseSquare && !squarePrev && !macroActive)
     {
         jitterActive = true;
@@ -102,7 +103,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         {
             // ida y vuelta: +AMP la mitad del tiempo, -AMP la otra mitad
             const int offset = (elapsed < (JITTER_US / 2)) ? +JITTER_AMP : -JITTER_AMP;
-            rsx = (uint8_t)std::clamp<int>((int)rsx + offset, 0, 255);
+            lsx = (uint8_t)std::clamp<int>((int)lsx + offset, 0, 255);
         }
     }
 
