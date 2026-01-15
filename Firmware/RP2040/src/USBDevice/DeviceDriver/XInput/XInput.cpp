@@ -44,6 +44,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static int16_t  aim_jitter_x     = 0;
     static int16_t  aim_jitter_y     = 0;
 
+    // Micro-jitter del stick derecho (temblorcitos con R2)
+    static uint64_t aim_r_last_time_ms = 0;
+    static int16_t  aim_r_jitter_x     = 0;
+    static int16_t  aim_r_jitter_y     = 0;
+
     // Suavizado del stick derecho (para drift)
     static int16_t  smooth_rx = 0;
     static int16_t  smooth_ry = 0;
@@ -122,8 +127,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // Suavizado: 75% valor anterior + 25% valor nuevo
-        smooth_rx = (int16_t)(( (int32_t)smooth_rx * 3 + raw_rx ) / 4);
-        smooth_ry = (int16_t)(( (int32_t)smooth_ry * 3 + raw_ry ) / 4);
+        smooth_rx = (int16_t)(((int32_t)smooth_rx * 3 + raw_rx) / 4);
+        smooth_ry = (int16_t)(((int32_t)smooth_ry * 3 + raw_ry) / 4);
 
         int16_t base_rx = smooth_rx;
         int16_t base_ry = smooth_ry;
@@ -192,7 +197,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             static const int16_t RECOIL_MAX    = 31128;  // ~95 %
             static const int64_t STRONG_US    = 1500000; // 1.5 s
 
-            // ⚠️ MÁS FUERTE QUE ANTES
             static const int16_t RECOIL_STRONG = 12250;
             static const int16_t RECOIL_WEAK   = 11750;
 
@@ -235,6 +239,47 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             {
                 is_shooting = false;
                 out_ry      = base_ry;
+            }
+        }
+
+        // =========================================================
+        // 4.5 MICRO-JITTER STICK DERECHO (REMEZONES SUAVES CON R2)
+        // =========================================================
+        {
+            static const int16_t R_CENTER_MAX   = 30000;   // límite para no estar full
+            static const int32_t R_CENTER_MAX2 =
+                (int32_t)R_CENTER_MAX * R_CENTER_MAX;
+
+            if (final_trig_r)
+            {
+                // Actualizamos el "temblor" cada ~30 ms
+                if (now_ms - aim_r_last_time_ms > 30)
+                {
+                    aim_r_last_time_ms = now_ms;
+
+                    const int16_t RJX = 1200; // jitter muy pequeño en X
+                    const int16_t RJY = 600;  // aún más pequeño en Y
+
+                    aim_r_jitter_x = (int16_t)((rand() % (2 * RJX + 1)) - RJX);
+                    aim_r_jitter_y = (int16_t)((rand() % (2 * RJY + 1)) - RJY);
+                }
+
+                // Solo aplicamos si no estás prácticamente a tope
+                int32_t magR2_out =
+                    (int32_t)out_rx * out_rx +
+                    (int32_t)out_ry * out_ry;
+
+                if (magR2_out < R_CENTER_MAX2)
+                {
+                    out_rx = clamp16((int16_t)(out_rx + aim_r_jitter_x));
+                    out_ry = clamp16((int16_t)(out_ry + aim_r_jitter_y));
+                }
+            }
+            else
+            {
+                // Sin R2 → sin temblor
+                aim_r_jitter_x = 0;
+                aim_r_jitter_y = 0;
             }
         }
 
