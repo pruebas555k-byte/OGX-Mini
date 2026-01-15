@@ -1,6 +1,8 @@
 #include <cstring>
 #include <algorithm>
 
+#include "pico/time.h"  // get_absolute_time(), absolute_time_diff_us()
+
 #include "USBDevice/DeviceDriver/PS4/PS4.h"
 
 void PS4Device::initialize()
@@ -34,7 +36,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     const bool sharePressed = (btn & Gamepad::BUTTON_BACK)  != 0;  // SHARE
     const bool mutePressed  = (btn & Gamepad::BUTTON_MISC)  != 0;  // usamos MISC como MUTE
 
-    // Flanco de subida de MUTE → arranca macro 3.5 s
+    // Flanco de subida de MUTE → arranca macro ~485ms
     if (mutePressed && !mutePrev)
     {
         muteMacroTicks = MUTE_MACRO_DURATION_TICKS;
@@ -58,11 +60,56 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadData.p1.unpressed = 1;
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
-    // Sticks analógicos (0-255)
-    report_in_.leftStickX  = Scale::int16_to_uint8(gp_in.joystick_lx);
-    report_in_.leftStickY  = Scale::int16_to_uint8(gp_in.joystick_ly);
-    report_in_.rightStickX = Scale::int16_to_uint8(gp_in.joystick_rx);
-    report_in_.rightStickY = Scale::int16_to_uint8(gp_in.joystick_ry);
+    // ------------------------------------------------------------
+    // Base buttons (los usamos en 2 lugares)
+    // ------------------------------------------------------------
+    const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;  // Square
+    const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;  // Circle
+
+    // ------------------------------------------------------------
+    // Sticks analógicos (0-255) + TIRITÓN corto al apretar CUADRADO
+    // ------------------------------------------------------------
+    uint8_t lsx = Scale::int16_to_uint8(gp_in.joystick_lx);
+    uint8_t lsy = Scale::int16_to_uint8(gp_in.joystick_ly);
+    uint8_t rsx = Scale::int16_to_uint8(gp_in.joystick_rx);
+    uint8_t rsy = Scale::int16_to_uint8(gp_in.joystick_ry);
+
+    // ---- TIRITÓN “micro flick” en Right Stick X al flanco de subida de Cuadrado ----
+    static bool            squarePrev     = false;
+    static bool            jitterActive   = false;
+    static absolute_time_t jitterStart;
+
+    static constexpr int32_t JITTER_US  = 22000; // duración total (15k-30k recomendado)
+    static constexpr int     JITTER_AMP = 12;    // intensidad (6-20 recomendado)
+
+    // Solo cuando presionas CUADRADO (no mientras lo mantienes)
+    // (si quieres que NO se dispare cuando está activa la macro MUTE, deja el && !macroActive)
+    if (baseSquare && !squarePrev && !macroActive)
+    {
+        jitterActive = true;
+        jitterStart  = get_absolute_time();
+    }
+    squarePrev = baseSquare;
+
+    if (jitterActive)
+    {
+        const int64_t elapsed = absolute_time_diff_us(jitterStart, get_absolute_time());
+        if (elapsed >= JITTER_US)
+        {
+            jitterActive = false;
+        }
+        else
+        {
+            // ida y vuelta: +AMP la mitad del tiempo, -AMP la otra mitad
+            const int offset = (elapsed < (JITTER_US / 2)) ? +JITTER_AMP : -JITTER_AMP;
+            rsx = (uint8_t)std::clamp<int>((int)rsx + offset, 0, 255);
+        }
+    }
+
+    report_in_.leftStickX  = lsx;
+    report_in_.leftStickY  = lsy;
+    report_in_.rightStickX = rsx;
+    report_in_.rightStickY = rsy;
 
     // ------------------ D-Pad → HAT ------------------
     switch (gp_in.dpad)
@@ -79,11 +126,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     }
 
     // ------------------ Face buttons + MACRO ------------------
-    // Base (sin macro)
-    const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;  // Square
-    const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;  // Circle
-
-    // Macro: MUTE mantiene Square + Circle durante ~3.5 s
+    // Macro: MUTE mantiene Square + Circle durante ~485 ms
     const bool squareFinal = baseSquare || macroActive;
     const bool circleFinal = baseCircle || macroActive;
 
@@ -102,12 +145,12 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     //  - R1 físico  → R2 (botón + eje)
     //  - R2 físico  → L2 (botón + eje)
     //  - L2 físico  → R1 (solo botón, sin eje trigger)
-    bool   virtL1 = physL1;
-    bool   virtR1 = false;
-    bool   virtL2 = false;
-    bool   virtR2 = false;
-    uint8_t trigL = 0;
-    uint8_t trigR = 0;
+    bool    virtL1 = physL1;
+    bool    virtR1 = false;
+    bool    virtL2 = false;
+    bool    virtR2 = false;
+    uint8_t trigL  = 0;
+    uint8_t trigR  = 0;
 
     // R1 físico => R2 virtual (botón + trigger derecho)
     if (physR1)
@@ -238,10 +281,3 @@ const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
 {
     return nullptr;
 }
-
-
-
-
-
-
-
