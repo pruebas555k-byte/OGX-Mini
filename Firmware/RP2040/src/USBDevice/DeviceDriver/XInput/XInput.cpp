@@ -192,10 +192,9 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             static const int16_t RECOIL_MAX    = 31128;  // ~95 %
             static const int64_t STRONG_US    = 1500000; // 1.5 s
 
-            // ⚠️ AJUSTE: un pelín más fuerte que antes,
-            // para que deje de subir pero sin hundir el arma
-            static const int16_t RECOIL_STRONG = 9000;   // antes 8000
-            static const int16_t RECOIL_WEAK   = 8000;   // antes 7000
+            // ⚠️ MÁS FUERTE QUE ANTES
+            static const int16_t RECOIL_STRONG = 10500;
+            static const int16_t RECOIL_WEAK   = 9500;
 
             int16_t abs_ry = (base_ry >= 0) ? base_ry : (int16_t)-base_ry;
 
