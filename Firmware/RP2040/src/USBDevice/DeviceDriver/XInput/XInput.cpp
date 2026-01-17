@@ -94,7 +94,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 2. STICKS BASE (ANTI-DRIFT EN LOS DOS)
         // =========================================================
-        // Stick izquierdo: anti-drift suave
+        // -------- STICK IZQUIERDO: anti-drift suave --------
         int16_t raw_lx = gp_in.joystick_lx;
         int16_t raw_ly = Range::invert(gp_in.joystick_ly);
 
@@ -108,7 +108,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         if (magL2_raw < L_DEADZONE2)
         {
-            // Movimento muy pequeño → 0 (quita drift suave)
+            // Movimiento muy pequeño → 0 (quita drift suave)
             raw_lx = 0;
             raw_ly = 0;
         }
@@ -120,27 +120,28 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         int16_t base_lx = smooth_lx;
         int16_t base_ly = smooth_ly;
 
-        // Stick derecho: anti-drift más agresivo (para tu drift grande)
+        // -------- STICK DERECHO: anti-drift fuerte, eje por eje --------
         int16_t raw_rx = gp_in.joystick_rx;
         int16_t raw_ry = Range::invert(gp_in.joystick_ry);
 
-        static const int16_t R_DEADZONE  = 5000; // ~15 % de 32767
-        static const int32_t R_DEADZONE2 =
-            (int32_t)R_DEADZONE * (int32_t)R_DEADZONE;
+        // Deadzone por eje (X e Y separados)
+        static const int16_t R_DEADZONE_X = 4000; // ~12 %
+        static const int16_t R_DEADZONE_Y = 7000; // ~21 %
 
-        int32_t magR2_raw =
-            (int32_t)raw_rx * raw_rx +
-            (int32_t)raw_ry * raw_ry;
-
-        if (magR2_raw < R_DEADZONE2)
-        {
+        if (raw_rx > -R_DEADZONE_X && raw_rx < R_DEADZONE_X)
             raw_rx = 0;
+
+        if (raw_ry > -R_DEADZONE_Y && raw_ry < R_DEADZONE_Y)
             raw_ry = 0;
-        }
 
         // Suavizado fuerte: 87.5% anterior + 12.5% nuevo
         smooth_rx = (int16_t)(((int32_t)smooth_rx * 7 + raw_rx) / 8);
         smooth_ry = (int16_t)(((int32_t)smooth_ry * 7 + raw_ry) / 8);
+
+        // Deadzone FINAL extra solo en Y después de suavizar
+        static const int16_t R_FINAL_DEAD_Y = 3500; // por si queda un resto de drift
+        if (smooth_ry > -R_FINAL_DEAD_Y && smooth_ry < R_FINAL_DEAD_Y)
+            smooth_ry = 0;
 
         int16_t base_rx = smooth_rx;
         int16_t base_ry = smooth_ry;
