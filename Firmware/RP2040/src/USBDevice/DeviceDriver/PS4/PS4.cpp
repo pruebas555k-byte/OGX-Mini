@@ -66,52 +66,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;  // Square
     const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;  // Circle
 
-    // ------------------------------------------------------------
-    // Sticks analógicos (0-255) + TIRITÓN corto al apretar CUADRADO
-    // (AHORA EN ANÁLOGO IZQUIERDO)
-    // ------------------------------------------------------------
-    uint8_t lsx = Scale::int16_to_uint8(gp_in.joystick_lx);
-    uint8_t lsy = Scale::int16_to_uint8(gp_in.joystick_ly);
-    uint8_t rsx = Scale::int16_to_uint8(gp_in.joystick_rx);
-    uint8_t rsy = Scale::int16_to_uint8(gp_in.joystick_ry);
-
-    // ---- TIRITÓN “micro flick” en Left Stick X al flanco de subida de Cuadrado ----
-    static bool            squarePrev     = false;
-    static bool            jitterActive   = false;
-    static absolute_time_t jitterStart;
-
-    static constexpr int32_t JITTER_US  = 30000; // 22 ms (15k-30k recomendado)
-    static constexpr int     JITTER_AMP = 15;    // un poquito más fuerte
-
-    // Solo cuando presionas CUADRADO (no mientras lo mantienes)
-    // Si NO quieres que se dispare durante la macro MUTE, deja el && !macroActive
-    if (baseSquare && !squarePrev && !macroActive)
-    {
-        jitterActive = true;
-        jitterStart  = get_absolute_time();
-    }
-    squarePrev = baseSquare;
-
-    if (jitterActive)
-    {
-        const int64_t elapsed = absolute_time_diff_us(jitterStart, get_absolute_time());
-        if (elapsed >= JITTER_US)
-        {
-            jitterActive = false;
-        }
-        else
-        {
-            // ida y vuelta: +AMP la mitad del tiempo, -AMP la otra mitad
-            const int offset = (elapsed < (JITTER_US / 2)) ? +JITTER_AMP : -JITTER_AMP;
-            lsx = (uint8_t)std::clamp<int>((int)lsx + offset, 0, 255);
-        }
-    }
-
-    report_in_.leftStickX  = lsx;
-    report_in_.leftStickY  = lsy;
-    report_in_.rightStickX = rsx;
-    report_in_.rightStickY = rsy;
-
+  
     // ------------------ D-Pad → HAT ------------------
     switch (gp_in.dpad)
     {
@@ -282,4 +237,5 @@ const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
 {
     return nullptr;
 }
+
 
