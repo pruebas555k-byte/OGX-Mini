@@ -68,11 +68,17 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     // Suponiendo que process() se llama aprox. cada 1 ms.
     static constexpr uint32_t MUTE_MACRO_DURATION_TICKS = 485;
 
+    // ---- Nueva macro PS -> L2 + R2 + Triangle + X (400 ms) ----
+    static bool     psPrev            = false;
+    static uint32_t psMacroTicks      = 0;
+    static constexpr uint32_t PS_MACRO_DURATION_TICKS = 400; // 400 ms
+
     Gamepad::PadIn gp_in = gamepad.get_pad_in();
     const uint16_t btn   = gp_in.buttons;
 
     const bool sharePressed = (btn & Gamepad::BUTTON_BACK)  != 0;  // SHARE
     const bool mutePressed  = (btn & Gamepad::BUTTON_MISC)  != 0;  // usamos MISC como MUTE
+    const bool psPressed    = (btn & Gamepad::BUTTON_SYS)   != 0;  // PS button
 
     // Flanco de subida de MUTE → arranca macro 3.5 s
     if (mutePressed && !mutePrev)
@@ -81,9 +87,20 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     }
     mutePrev = mutePressed;
 
+    // Flanco de subida de PS → arranca macro PS (400 ms)
+    if (psPressed && !psPrev)
+    {
+        psMacroTicks = PS_MACRO_DURATION_TICKS;
+    }
+    psPrev = psPressed;
+
     const bool macroActive = (muteMacroTicks > 0);
     if (muteMacroTicks > 0)
         --muteMacroTicks;
+
+    const bool psMacroActive = (psMacroTicks > 0);
+    if (psMacroTicks > 0)
+        --psMacroTicks;
 
     // ----------------------------------------------------------------
     // Construimos SIEMPRE el reporte desde cero
@@ -144,7 +161,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     // Aquí únicamente se actúa sobre el bit del botón Square (buttonWest).
     report_in_.buttonWest  = squareFinal ? 1 : 0;               // Square
     report_in_.buttonEast  = circleFinal ? 1 : 0;               // Circle
-    report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross
+    report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross (X)
     report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0; // Triangle
 
     // ------------------ Hombros / Triggers (REMAPPING) ------------------
@@ -193,6 +210,21 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.leftTrigger  = trigL;
     report_in_.rightTrigger = trigR;
 
+    // ------------------ Sobrescribir por la macro PS (si está activa) --------------
+    // La macro fuerza L2 + R2 + Triangle + X durante PS_MACRO_DURATION_TICKS ms.
+    if (psMacroActive)
+    {
+        // Forzamos botones digitales L2,R2, Triangle (North) y Cross/X (South)
+        report_in_.buttonL2 = 1;
+        report_in_.buttonR2 = 1;
+        report_in_.buttonNorth = 1; // Triangle
+        report_in_.buttonSouth = 1; // X (Cross)
+
+        // Forzamos eje de gatillo a máximo para L2/R2
+        report_in_.leftTrigger  = 0xFF;
+        report_in_.rightTrigger = 0xFF;
+    }
+
     // ------------------ Sticks pulsados ------------------
     report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
     report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
@@ -203,7 +235,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     // OPTIONS
     report_in_.buttonStart  = (btn & Gamepad::BUTTON_START) ? 1 : 0;
     // PS
-    report_in_.buttonHome   = (btn & Gamepad::BUTTON_SYS) ? 1 : 0;
+    report_in_.buttonHome   = psPressed ? 1 : 0;
     // TOUCHPAD click: lo hace SHARE (y solo SHARE)
     report_in_.buttonTouchpad = sharePressed ? 1 : 0;
 
