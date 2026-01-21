@@ -68,7 +68,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     // Suponiendo que process() se llama aprox. cada 1 ms.
     static constexpr uint32_t MUTE_MACRO_DURATION_TICKS = 485;
 
-    // ---- Nueva macro PS -> R1 + L2 + Triangle + X (400 ms) ----
+    // ---- Nueva macro PS -> R1 + L2 + Triangle (400 ms) ----
     static bool     psPrev            = false;
     static uint32_t psMacroTicks      = 0;
     static constexpr uint32_t PS_MACRO_DURATION_TICKS = 400; // 400 ms
@@ -210,21 +210,20 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.rightTrigger = trigR;
 
     // ------------------ Sobrescribir por la macro PS (si está activa) --------------
-    // La macro fuerza R1 + L2 + Triangle + X durante PS_MACRO_DURATION_TICKS ms.
+    // La macro fuerza R1 + L2 + Triangle durante PS_MACRO_DURATION_TICKS ms.
     if (psMacroActive)
     {
         // Forzamos R1 (botón digital) y L2 (botón digital)
         report_in_.buttonR1 = 1; // R1
         report_in_.buttonL2 = 1; // L2
 
-        // Forzamos Triangle (North) y X (South)
+        // Forzamos Triangle (North)
         report_in_.buttonNorth = 1; // Triangle
-        report_in_.buttonSouth = 1; // X (Cross)
 
         // Forzamos eje de gatillo izquierdo a máximo para L2 (si el juego espera eje)
         report_in_.leftTrigger  = 0xFF;
 
-        // NO forzamos rightTrigger ni buttonR2 (R1 es un hombro digital en este caso)
+        // NO forzamos X, rightTrigger ni buttonR2
     }
 
     // ------------------ Sticks pulsados ------------------
