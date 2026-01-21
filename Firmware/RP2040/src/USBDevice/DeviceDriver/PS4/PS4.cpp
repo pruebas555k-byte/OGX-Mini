@@ -5,42 +5,89 @@
 
 #include "USBDevice/DeviceDriver/PS4/PS4.h"
 
-// Helper: curvas de sensibilidad para sticks
-// - Para regates (left stick) usamos un exponente < 1 para aumentar la respuesta en pequeñas entradas.
-// - Para tiro de precisión (right stick) usamos un exponente > 1 para suavizar cerca del centro.
+// Helper: curvas / mapeos de sensibilidad para sticks
+// - Left stick: usamos una curva personalizada tipo "Steam" definida por 3 puntos:
+//     (0 -> 0), (mid_in -> mid_out), (1 -> 1)
+//   Implementada como mapeo lineal por tramos (fácil de ajustar y predecible).
+//   Ejemplo tomado de tu comentario: rango 0..375, mid_in = 200 -> mid_out = 125.
+//   En fracciones: mid_in_frac = 200/375, mid_out_frac = 125/375.
 //
-// Mapping: int16_t in [-32768,32767] -> float v in [-1,1] -> aplicar deadzone y curva -> uint8_t [0..255]
+// - Right stick: lineal pero con un factor de sensibilidad < 1 (menos sensible).
+//
+// Mapping general: int16_t in [-32768,32767] -> float v in [-1,1] -> deadzone -> curva -> uint8_t [0..255]
 // Centro exacto se sitúa en 128.
-static inline uint8_t apply_stick_curve(int16_t in, float exponent, float deadzone_fraction)
+
+static inline uint8_t map_signed_to_uint8(float signed_val)
 {
-    constexpr float INT16_MAX_F = 32767.0f;
-
-    // Normalizamos a [-1, 1]
-    float v = static_cast<float>(in) / INT16_MAX_F;
-
-    float abs_v = std::fabs(v);
-    if (abs_v <= deadzone_fraction)
-    {
-        // Centro
-        return 128;
-    }
-
-    // Remapear el valor fuera de la deadzone a [0..1]
-    float adj = (abs_v - deadzone_fraction) / (1.0f - deadzone_fraction);
-    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
-
-    // Aplicar la curva de sensibilidad
-    float curved = std::pow(adj, exponent);
-
-    // Restaurar signo y mapear a uint8 0..255 (centro = 128)
-    float signed_curved = (v < 0.0f) ? -curved : curved;
-    float mapped = signed_curved * 127.0f + 128.0f;
-
-    // Clamp y retorno
+    // signed_val en [-1, 1], centro = 0 -> 128
+    float mapped = signed_val * 127.0f + 128.0f;
     int out = static_cast<int>(std::round(mapped));
     if (out < 0) out = 0;
     if (out > 255) out = 255;
     return static_cast<uint8_t>(out);
+}
+
+static inline uint8_t apply_stick_linear(int16_t in, float sensitivity, float deadzone_fraction)
+{
+    constexpr float INT16_MAX_F = 32767.0f;
+    float v = static_cast<float>(in) / INT16_MAX_F; // [-1,1]
+    float abs_v = std::fabs(v);
+    if (abs_v <= deadzone_fraction)
+    {
+        return 128;
+    }
+
+    // Remapear fuera de deadzone a [0..1]
+    float adj = (abs_v - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
+
+    // Aplicar sensibilidad (factor linear)
+    float scaled = adj * sensitivity;
+    if (scaled > 1.0f) scaled = 1.0f;
+
+    float signed_scaled = (v < 0.0f) ? -scaled : scaled;
+    return map_signed_to_uint8(signed_scaled);
+}
+
+static inline uint8_t apply_stick_custom_curve(int16_t in,
+                                               float mid_in_frac, float mid_out_frac,
+                                               float deadzone_fraction)
+{
+    // mid_in_frac, mid_out_frac en [0..1]
+    constexpr float INT16_MAX_F = 32767.0f;
+    float v = static_cast<float>(in) / INT16_MAX_F; // [-1,1]
+    float abs_v = std::fabs(v);
+    if (abs_v <= deadzone_fraction)
+    {
+        return 128;
+    }
+
+    // Remapear fuera de deadzone a [0..1]
+    float adj = (abs_v - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
+
+    float out_frac;
+    // Piecewise linear between (0,0), (mid_in, mid_out), (1,1)
+    if (adj <= mid_in_frac)
+    {
+        if (mid_in_frac <= 0.0f) out_frac = mid_out_frac; // evita división por 0
+        else out_frac = (mid_out_frac / mid_in_frac) * adj;
+    }
+    else
+    {
+        // tramo (mid_in_frac..1) -> (mid_out_frac..1)
+        float denom = (1.0f - mid_in_frac);
+        if (denom <= 0.0f)
+            out_frac = 1.0f;
+        else
+            out_frac = mid_out_frac + ((1.0f - mid_out_frac) / denom) * (adj - mid_in_frac);
+    }
+
+    // Clamp por si acaso
+    out_frac = std::fmax(0.0f, std::fmin(1.0f, out_frac));
+
+    float signed_out = (v < 0.0f) ? -out_frac : out_frac;
+    return map_signed_to_uint8(signed_out);
 }
 
 void PS4Device::initialize()
@@ -115,24 +162,25 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadData.p1.unpressed = 1;
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
-    // ------------------ Sticks analógicos (0-255) con curvas mejoradas ---------------
-    // Parámetros ajustables:
-    // - left: diseñado para regates -> más reactivo en pequeñas entradas (exponente < 1)
-    // - right: diseñado para precisión en tiros -> más fino alrededor del centro (exponente > 1)
+    // ------------------ Sticks analógicos (0-255) con ajustes solicitados ---------------
+    // RIGHT: lineal pero menos sensible
+    // LEFT: curva personalizada estilo "Steam" con puntos:
+    //   - total range assumed 0..375
+    //   - mid input  = 200 -> mid output = 125  (tú lo usabas así y te iba bien)
     //
-    // Si quieres cambiar comportamiento:
-    //  - ajustar left_exponent (p. ej. 0.7..1.0)
-    //  - ajustar right_exponent (p. ej. 1.0..2.5)
-    //  - ajustar deadzones (fracciones de la máxima entrada)
-    constexpr float left_exponent  = 0.85f;  // <1 => amplifica pequeñas entradas (mejor regates)
-    constexpr float right_exponent = 1.8f;   // >1 => suaviza cerca del centro (mejor precisión)
-    constexpr float left_deadzone  = 0.03f;  // ~ 0.03 * 32767 ≈ 980
-    constexpr float right_deadzone = 0.02f;
+    // Convertimos esos valores a fracciones [0..1]:
+    constexpr float steam_total = 375.0f;
+    constexpr float left_mid_in = 200.0f / steam_total; // ≈ 0.5333
+    constexpr float left_mid_out = 125.0f / steam_total; // ≈ 0.3333
+    constexpr float left_deadzone = 0.03f;   // puedes ajustar
+    constexpr float right_deadzone = 0.02f;  // puedes ajustar
+    constexpr float right_sensitivity = 0.85f; // <1 → menos sensible
 
-    report_in_.leftStickX  = apply_stick_curve(gp_in.joystick_lx, left_exponent,  left_deadzone);
-    report_in_.leftStickY  = apply_stick_curve(gp_in.joystick_ly, left_exponent,  left_deadzone);
-    report_in_.rightStickX = apply_stick_curve(gp_in.joystick_rx, right_exponent, right_deadzone);
-    report_in_.rightStickY = apply_stick_curve(gp_in.joystick_ry, right_exponent, right_deadzone);
+    report_in_.leftStickX  = apply_stick_custom_curve(gp_in.joystick_lx, left_mid_in, left_mid_out, left_deadzone);
+    report_in_.leftStickY  = apply_stick_custom_curve(gp_in.joystick_ly, left_mid_in, left_mid_out, left_deadzone);
+
+    report_in_.rightStickX = apply_stick_linear(gp_in.joystick_rx, right_sensitivity, right_deadzone);
+    report_in_.rightStickY = apply_stick_linear(gp_in.joystick_ry, right_sensitivity, right_deadzone);
 
     // ------------------ D-Pad → HAT ------------------
     switch (gp_in.dpad)
@@ -149,15 +197,13 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     }
 
     // ------------------ Face buttons + MACRO ------------------
-    // Base (sin macro)
     const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;  // Square
     const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;  // Circle
 
-    // Macro: MUTE mantiene Square + Circle durante ~3.5 s
     const bool squareFinal = baseSquare || macroActive;
     const bool circleFinal = baseCircle || macroActive;
 
-    // NOTA: no hay remapeo que mueva el stick izquierdo al pulsar Square.
+    // NO remapeos que muevan el stick izquierdo al pulsar Square (tal como pediste).
     report_in_.buttonWest  = squareFinal ? 1 : 0;               // Square
     report_in_.buttonEast  = circleFinal ? 1 : 0;               // Circle
     report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross (X)
@@ -169,10 +215,6 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     const bool physL2 = gp_in.trigger_l;                 // L2 físico (digital)
     const bool physR2 = gp_in.trigger_r;                 // R2 físico (digital)
 
-    // Queremos:
-    //  - R1 físico  → R2 (botón + eje)
-    //  - R2 físico  → L2 (botón + eje)
-    //  - L2 físico  → R1 (solo botón, sin eje trigger)
     bool   virtL1 = physL1;
     bool   virtR1 = false;
     bool   virtL2 = false;
@@ -180,25 +222,21 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     uint8_t trigL = 0;
     uint8_t trigR = 0;
 
-    // R1 físico => R2 virtual (botón + trigger derecho)
     if (physR1)
     {
         virtR2 = true;
         trigR  = 0xFF;
     }
 
-    // R2 físico => L2 virtual (botón + trigger izquierdo)
     if (physR2)
     {
         virtL2 = true;
         trigL  = 0xFF;
     }
 
-    // L2 físico => R1 virtual (solo botón, SIN eje)
     if (physL2)
     {
         virtR1 = true;
-        // NO tocamos trigL / trigR aquí → así no aprieta R2
     }
 
     report_in_.buttonL1 = virtL1 ? 1 : 0;
@@ -213,17 +251,10 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     // La macro fuerza R1 + L2 + Triangle durante PS_MACRO_DURATION_TICKS ms.
     if (psMacroActive)
     {
-        // Forzamos R1 (botón digital) y L2 (botón digital)
         report_in_.buttonR1 = 1; // R1
         report_in_.buttonL2 = 1; // L2
-
-        // Forzamos Triangle (North)
         report_in_.buttonNorth = 1; // Triangle
-
-        // Forzamos eje de gatillo izquierdo a máximo para L2 (si el juego espera eje)
-        report_in_.leftTrigger  = 0xFF;
-
-        // NO forzamos X, rightTrigger ni buttonR2
+        report_in_.leftTrigger  = 0xFF; // fuerza eje L2 al máximo
     }
 
     // ------------------ Sticks pulsados ------------------
@@ -231,13 +262,9 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
 
     // ------------------ Centrales ------------------
-    // SHARE normal
     report_in_.buttonSelect = sharePressed ? 1 : 0;
-    // OPTIONS
     report_in_.buttonStart  = (btn & Gamepad::BUTTON_START) ? 1 : 0;
-    // PS
     report_in_.buttonHome   = psPressed ? 1 : 0;
-    // TOUCHPAD click: lo hace SHARE (y solo SHARE)
     report_in_.buttonTouchpad = sharePressed ? 1 : 0;
 
     // ----------------------------------------------------------------
