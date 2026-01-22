@@ -1,5 +1,5 @@
 #include <cstring>
-#include <cstdlib>        // rand()
+#include <cstdlib>        // rand(), srand()
 #include <cmath>          // std::sin, std::cos
 #include "pico/time.h"    // absolute_time, time_diff, etc.
 
@@ -40,13 +40,12 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static uint64_t tri_last_tap_ms     = 0;
     static bool     tri_tap_state       = false;
 
-    // Aim assist PRO - dinámica y humana
+    // Aim assist (horizontal, suave y "humano")
     static uint64_t aim_last_time_ms = 0;
     static int16_t  aim_direction    = 1;  // 1 (derecha), -1 (izquierda)
     static bool     aim_active       = false;
-
-    // Aim-assist PRO: timing variable
-    static uint64_t aim_interval     = 60 + (rand() % 40); // 60-100 ms
+    static uint16_t aim_interval_ms  = 80; // variable, recalculada
+    static bool     rng_seeded       = false; // para srand una sola vez
 
     if (gamepad.new_pad_in())
     {
@@ -57,6 +56,13 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         const uint16_t btn   = gp_in.buttons;
 
         uint64_t now_ms = to_ms_since_boot(get_absolute_time());
+
+        // Seed RNG una vez con tiempo (para jitter / timing irregular)
+        if (!rng_seeded)
+        {
+            srand((unsigned)now_ms);
+            rng_seeded = true;
+        }
 
         // =========================================================
         // 1. TRIGGERS Y ESTADO R2 MACRO
@@ -131,70 +137,106 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             (int32_t)base_lx * base_lx +
             (int32_t)base_ly * base_ly;
 
+        // Right stick magnitude squared (post-deadzone)
+        int32_t magR2 = (int32_t)base_rx * base_rx + (int32_t)base_ry * base_ry;
+
         // =========================================================
-        // 3. AIM ASSIST PRO - STICK DINÁMICO Y NO DETERMINISTA
+        // 3. AIM ASSIST HORIZONTAL: proporcional, jitter, timing irregular
         // =========================================================
         {
-            // Parámetros realistas
-            static const int16_t AIM_CENTER_MAX  = 30000; // ~70-80%
+            // Centros y límites
+            static const int16_t AIM_CENTER_MAX  = 35000; // ~80%
             static const int32_t AIM_CENTER_MAX2 =
                 (int32_t)AIM_CENTER_MAX * (int32_t)AIM_CENTER_MAX;
 
-            // Solo si disparas y el stick izq está razonablemente centrado
-            if (final_trig_r && magL2 < AIM_CENTER_MAX2) {
-                // Solo si el R-stick está casi quieto (no luchas tú por aim)
-                int32_t magR2 =
-                    (int32_t)base_rx * base_rx +
-                    (int32_t)base_ry * base_ry;
+            // Parámetros recomendados y rangos
+            static const int16_t AIM_PULSE_MAX_RECOMMENDED = 1400; // tope sugerido
+            static const int16_t AIM_PULSE_MIN_RECOMMENDED = 700;
 
-                static const int32_t R_STICK_THRESH2 = (int32_t)(0.06f * 32767) * (int32_t)(0.06f * 32767); // 6%
+            // Threshold para aplicar aim assist: solo cuando estás "apuntando"
+            // (stick L cerca del centro) y R-stick casi quieto (no puedes estar moviendo R).
+            static const int32_t R_STILL_THRESHOLD = 5000 * 5000; // según tu sugerencia
 
-                if (magR2 < R_STICK_THRESH2)
+            if (final_trig_r && magL2 <= AIM_CENTER_MAX2 && magR2 < R_STILL_THRESHOLD)
+            {
+                // Activación: configuraciones iniciales
+                if (!aim_active)
                 {
-                    aim_active = true;
-
-                    // Fuerza proporcional al movimiento del stick
-                    int16_t abs_lx = abs(base_lx);
-                    int16_t dynamic_assist =
-                        (abs_lx < 6000)  ? 1300 :
-                        (abs_lx < 12000) ? 850  :
-                                            0;
-
-                    // Oscilación derecha/izquierda pero solo cambia cada intervalo variable
-                    if (now_ms - aim_last_time_ms > aim_interval)
-                    {
-                        aim_interval = 60 + (rand() % 40); // timing irregular
-                        aim_last_time_ms = now_ms;
-                        aim_direction = -aim_direction; // switch direction
-                    }
-
-                    // Micro-offset aleatorio
-                    int16_t jitter = (rand() % 201) - 100; // -100 a +100
-
-                    out_lx = clamp16(out_lx + aim_direction * dynamic_assist + jitter);
-                    // out_ly igual que base
+                    aim_active       = true;
+                    aim_last_time_ms = now_ms;
+                    // dirección inicial aleatoria para evitar patrón exacto
+                    aim_direction = (rand() & 1) ? 1 : -1;
+                    // intervalo inicial aleatorio 60..100 ms
+                    aim_interval_ms = 60 + (rand() % 41); // 60..100
                 }
-            } else {
-                aim_active = false;
+
+                // Timing irregular: recomputa intervalo tras cada ejecución
+                if ((now_ms - aim_last_time_ms) > aim_interval_ms)
+                {
+                    aim_last_time_ms = now_ms;
+                    // recalcular intervalo irregular: 60..100 ms
+                    aim_interval_ms = 60 + (rand() % 41);
+
+                    // Con baja probabilidad invierte dirección para hacerlo asimétrico
+                    if ((rand() % 100) < 30) // 30% de probabilidad de flip
+                    {
+                        aim_direction = -aim_direction;
+                    }
+                }
+
+                // Fuerza proporcional al movimiento del stick L (imita slowdown)
+                int16_t abs_lx = (base_lx >= 0) ? base_lx : (int16_t)-base_lx;
+                int16_t dynamic_assist;
+                // Mapeo sugerido (ajustable)
+                if (abs_lx < 6000) dynamic_assist = 1200;
+                else if (abs_lx < 12000) dynamic_assist = 700;
+                else dynamic_assist = 0;
+
+                // Clamp a recomendaciones máximas
+                if (dynamic_assist > AIM_PULSE_MAX_RECOMMENDED) dynamic_assist = AIM_PULSE_MAX_RECOMMENDED;
+                if (dynamic_assist < AIM_PULSE_MIN_RECOMMENDED && dynamic_assist != 0) dynamic_assist = AIM_PULSE_MIN_RECOMMENDED;
+
+                // Micro-offset aleatorio (jitter) para romper firmas
+                int16_t jitter = (rand() % 201) - 100; // -100 .. +100
+
+                // Solo aplicar si dynamic_assist > 0
+                if (dynamic_assist > 0)
+                {
+                    // Añade la asistencia teniendo en cuenta dirección y jitter
+                    int32_t tmp = (int32_t)out_lx + (int32_t)aim_direction * (int32_t)dynamic_assist + (int32_t)jitter;
+
+                    out_lx = clamp16(static_cast<int16_t>(tmp));
+                }
+                else
+                {
+                    out_lx = base_lx;
+                }
+            }
+            else
+            {
+                // no aplicable → restablecer estados
+                aim_active       = false;
                 aim_last_time_ms = 0;
-                aim_direction = 1;
-                aim_interval = 60 + (rand() % 40);
-                out_lx = base_lx;
-                out_ly = base_ly;
+                aim_direction    = 1;
+                out_lx           = base_lx;
+                out_ly           = base_ly;
             }
         }
 
         // =========================================================
-        // 4. ANTI-RECOIL PRO - HUMANO, DINÁMICO Y CON VARIACIÓN
+        // 4. ANTI-RECOIL (PRO): responder al tiempo, al input, ruido por bala
         // =========================================================
         {
-            static const int16_t RECOIL_MAX    = 33128;
-            static const int64_t RAMP_US      = 42000;
-            static const int64_t STRONG_US    = 75000;
-            static const int64_t DECAY_US     = 35000;
+            // Timings en microsegundos (ajustables)
+            static const int64_t RAMP_US      = 40000; // tiempo de rampa
+            static const int64_t STRONG_US    = 65000; // tiempo para fuerza fuerte sostenida
+            static const int64_t DECAY_US     = 35000; // decay (30-50 ms recomendados) -> 35 ms
 
-            static const int16_t RECOIL_STRONG = 8200;   // Fuerte y realista
-            static const int16_t RECOIL_WEAK   = 7300;   // Decae
+            // Valores de recoil (ajustados a rango recomendado)
+            static const int16_t RECOIL_STRONG = 8000;   // fuerza pico
+            static const int16_t RECOIL_WEAK   = 7000;   // fuerza mínima sostenida
+
+            static const int16_t RECOIL_MAX    = 33128;
 
             int16_t abs_ry = (base_ry >= 0) ? base_ry : (int16_t)-base_ry;
 
@@ -206,54 +248,73 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                     shot_start_time = get_absolute_time();
                 }
 
-                // No actúa si ya jalas mucho el stick (compensas tú mismo)
+                // Si el jugador ya está jalando fuertemente hacia abajo, no interfieras
                 if (base_ry < -4000)
                 {
                     out_ry = base_ry;
                 }
-                else if (abs_ry < RECOIL_MAX)
-                {
-                    int64_t t_us = absolute_time_diff_us(
-                        shot_start_time,
-                        get_absolute_time()
-                    );
-
-                    // Ruido por bala (anti-detección)
-                    int16_t recoil_noise = (rand() % 301) - 150;
-
-                    int16_t recoil_force;
-                    // Escala de tiempo spray
-                    if (t_us < RAMP_US)
-                        recoil_force = static_cast<int16_t>(
-                            (RECOIL_STRONG * t_us) / RAMP_US
-                        );
-                    else if (t_us < STRONG_US)
-                        recoil_force = RECOIL_STRONG;
-                    else if (t_us < STRONG_US + DECAY_US)
-                        recoil_force = static_cast<int16_t>(
-                            RECOIL_STRONG + ((int64_t)(RECOIL_WEAK - RECOIL_STRONG) * (t_us - STRONG_US)) / DECAY_US
-                        );
-                    else
-                        recoil_force = RECOIL_WEAK;
-
-                    recoil_force += recoil_noise;
-
-                    // Escala por cuánto jalas tú el stick vertical (más humano)
-                    int16_t player_pull = abs(base_ry);
-                    float recoil_scale =
-                        (player_pull < 2000) ? 1.0f :
-                        (player_pull < 6000) ? 0.7f :
-                                               0.4f;
-                    recoil_force = static_cast<int16_t>(recoil_force * recoil_scale);
-
-                    int32_t val = (int32_t)base_ry - recoil_force;
-                    if (val < -RECOIL_MAX) val = -RECOIL_MAX;
-                    if (val >  RECOIL_MAX) val =  RECOIL_MAX;
-                    out_ry = (int16_t)val;
-                }
                 else
                 {
-                    out_ry = base_ry;
+                    if (abs_ry < RECOIL_MAX)
+                    {
+                        int64_t t_us = absolute_time_diff_us(
+                            shot_start_time,
+                            get_absolute_time()
+                        );
+
+                        // Base de recoil calculada por el tiempo (rampa / plateau / decay)
+                        float recoil_force_f = 0.0f;
+
+                        if (t_us < RAMP_US)
+                        {
+                            recoil_force_f = (float)RECOIL_STRONG * ((float)t_us / (float)RAMP_US);
+                        }
+                        else if (t_us < STRONG_US)
+                        {
+                            recoil_force_f = (float)RECOIL_STRONG;
+                        }
+                        else
+                        {
+                            int64_t t2 = t_us - STRONG_US;
+                            if (t2 >= DECAY_US)
+                            {
+                                recoil_force_f = (float)RECOIL_WEAK;
+                            }
+                            else
+                            {
+                                recoil_force_f = (float)RECOIL_STRONG +
+                                    ((float)(RECOIL_WEAK - RECOIL_STRONG) * ((float)t2 / (float)DECAY_US));
+                            }
+                        }
+
+                        // Escala según cuánto jala el jugador (player_pull = |base_ry|)
+                        int16_t player_pull = abs_ry;
+                        float recoil_scale;
+                        if (player_pull < 2000) recoil_scale = 1.0f;
+                        else if (player_pull < 6000) recoil_scale = 0.7f;
+                        else recoil_scale = 0.4f;
+
+                        // Ruido por "bala" (micro-variación)
+                        int16_t recoil_noise = (rand() % 301) - 150; // -150 .. +150
+
+                        // Aplicar ruido y escala
+                        recoil_force_f += (float)recoil_noise;
+                        recoil_force_f *= recoil_scale;
+
+                        // Convertir a entero y restar del input del jugador
+                        int32_t recoil_force = (int32_t)std::lround(recoil_force_f);
+
+                        int32_t val = (int32_t)base_ry - recoil_force;
+
+                        if (val < -RECOIL_MAX) val = -RECOIL_MAX;
+                        if (val >  RECOIL_MAX) val =  RECOIL_MAX;
+
+                        out_ry = (int16_t)val;
+                    }
+                    else
+                    {
+                        out_ry = base_ry;
+                    }
                 }
             }
             else
@@ -262,6 +323,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 out_ry      = base_ry;
             }
         }
+
+        // ----------------- resto igual -----------------
 
         // 5. DPAD
         switch (gp_in.dpad)
