@@ -102,6 +102,9 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         //    Más FUERTE pero MÁS LENTO:
         //      - jitter ~20% del rango
         //      - se actualiza cada ~35 ms
+        //    Ahora limitamos el efecto al 95% del rango para que no
+        //    mueva la cámara hasta el máximo absoluto y evite giros
+        //    extremos.
         // =========================================================
         if (final_trig_r)   // solo cuando disparas con R2
         {
@@ -112,9 +115,15 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             {
                 aim_last_time_ms = now_ms;
 
-                const int16_t JITTER = 6000; // fuerza del aim assist
+                const int16_t JITTER = 6000; // fuerza del aim assist (valor base)
+                // Generamos jitter en rango [-JITTER, +JITTER]
                 aim_jitter_x = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
                 aim_jitter_y = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
+
+                // Escalamos el efecto máximo al 95% para seguridad
+                constexpr int SCALE_PCT = 95;
+                aim_jitter_x = static_cast<int16_t>((aim_jitter_x * SCALE_PCT) / 100);
+                aim_jitter_y = static_cast<int16_t>((aim_jitter_y * SCALE_PCT) / 100);
             }
 
             out_lx = clamp16(out_lx + aim_jitter_x);
@@ -134,6 +143,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         //   - Luego: más suave
         //   Antes lo sumábamos con el signo equivocado (subía),
         //   ahora lo RESTAMOS para que baje la mira.
+        //   Limitamos el efecto al 95% para evitar empujar el eje
+        //   hasta los extremos absolutos.
         // =========================================================
         if (final_trig_r)
         {
@@ -156,8 +167,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                                  ? RECOIL_STRONG
                                  : RECOIL_WEAK;
 
-            // ANTES: out_ry = clamp16(out_ry + recoil_force);  // subía
-            // AHORA: restamos para que empuje hacia ABAJO
+            // Escalamos el recoil al 95% máximo
+            constexpr int SCALE_PCT = 95;
+            recoil_force = static_cast<int16_t>((recoil_force * SCALE_PCT) / 100);
+
+            // RESTAMOS para que empuje hacia ABAJO
             out_ry = clamp16(out_ry - recoil_force);
         }
         else
@@ -241,7 +255,12 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             in_report_.buttons[0] |= XInput::Buttons0::BACK;
         }
 
-        // MUTE (BUTTON_MISC): ahora no hace nada especial en XInput
+        // --- MUTE (BUTTON_MISC) actuará ahora como TOUCHPAD (BACK) ---
+        // De esta forma el botón MUTE se comporta igual que el touchpad.
+        if (btn & Gamepad::BUTTON_MISC)
+        {
+            in_report_.buttons[0] |= XInput::Buttons0::BACK;
+        }
 
         // =========================================================
         // 7. DROP SHOT (R2 sin L2) -> B
@@ -285,14 +304,25 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // =========================================================
         // 9. ASIGNAR TRIGGERS Y STICKS FINALES
+        //    Antes de escribir los ejes finales, limitamos todos
+        //    los ejes para que no superen el 95% del rango absoluto.
         // =========================================================
         in_report_.trigger_l   = final_trig_l;
         in_report_.trigger_r   = final_trig_r;
 
-        in_report_.joystick_lx = out_lx;
-        in_report_.joystick_ly = out_ly;
-        in_report_.joystick_rx = out_rx;
-        in_report_.joystick_ry = out_ry;
+        // Limitar ejes al 95% del máximo para evitar giros extremos
+        constexpr int16_t AXIS_95 = static_cast<int16_t>((32767 * 95) / 100); // ≈ 31128
+        auto clamp95 = [](int16_t v) -> int16_t {
+            constexpr int16_t LIM = static_cast<int16_t>((32767 * 95) / 100);
+            if (v < -LIM) return -LIM;
+            if (v >  LIM) return  LIM;
+            return v;
+        };
+
+        in_report_.joystick_lx = clamp95(out_lx);
+        in_report_.joystick_ly = clamp95(out_ly);
+        in_report_.joystick_rx = clamp95(out_rx);
+        in_report_.joystick_ry = clamp95(out_ry);
 
         // =========================================================
         // 10. ENVIAR REPORTE XINPUT
