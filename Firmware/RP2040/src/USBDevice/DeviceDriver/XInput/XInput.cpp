@@ -132,11 +132,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // 3. AIM ASSIST HORIZONTAL, SUAVE PERO MÁS AMPLIO
         // =========================================================
         {
-            static const int16_t AIM_CENTER_MAX  = 30000; // ~80%
+            static const int16_t AIM_CENTER_MAX  = 35000; // ~80%
             static const int32_t AIM_CENTER_MAX2 =
                 (int32_t)AIM_CENTER_MAX * (int32_t)AIM_CENTER_MAX;
-            static const int16_t AIM_ASSIST_PULSE = 900;   // UN POCO MÁS FUERTE
-            static const uint64_t AIM_ASSIST_INTERVAL = 100; // Cambio cada 100ms
+            static const int16_t AIM_ASSIST_PULSE = 1500;   // UN POCO MÁS FUERTE
+            static const uint64_t AIM_ASSIST_INTERVAL = 80; // Cambio cada 100ms
 
             if (final_trig_r && magL2 <= AIM_CENTER_MAX2)
             {
@@ -169,10 +169,10 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // 4. ANTI-RECOIL (SUAVIZADO)
         // =========================================================
         {
-            static const int16_t RECOIL_MAX    = 31128;
-            static const int64_t RAMP_US      = 100000;
-            static const int64_t STRONG_US    = 1250000;
-            static const int64_t DECAY_US     = 1000000;
+            static const int16_t RECOIL_MAX    = 33128;
+            static const int64_t RAMP_US      = 40000;
+            static const int64_t STRONG_US    = 65000;
+            static const int64_t DECAY_US     = 40000;
 
             static const int16_t RECOIL_STRONG = 9000;   // Suave
             static const int16_t RECOIL_WEAK   = 8500;
