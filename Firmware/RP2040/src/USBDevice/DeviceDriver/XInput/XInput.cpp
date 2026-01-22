@@ -1,6 +1,5 @@
 #include <cstring>
 #include <cstdlib>        // rand()
-#include <cmath>          // std::sin, std::cos, std::sqrt
 #include "pico/time.h"    // absolute_time, time_diff, etc.
 
 #include "USBDevice/DeviceDriver/XInput/tud_xinput/tud_xinput.h"
@@ -15,117 +14,82 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 {
     (void)idx;
 
-    // ---------- ESTADOS ESTÁTICOS ----------
-    // Anti-recoil
+    // ---------- ESTADO ESTÁTICO PARA MACROS / TIEMPOS ----------
     static absolute_time_t shot_start_time;
     static bool            is_shooting = false;
 
-    // Macro L1 (turbo X/A + 1s de cola)
-    static bool            jump_l1_macro_active = false;
-    static uint64_t        jump_l1_stop_time_ms = 0;
-    static uint64_t        jump_l1_last_tap_ms  = 0;
-    static bool            jump_l1_tap_state    = false;
+    // Macro L1 (spam jump)
+    static bool            jump_macro_active = false;
+    static absolute_time_t jump_end_time;
+    static uint64_t        last_tap_time = 0;
+    static bool            tap_state    = false;
 
-    // Macro R2 (turbo X/A instante, bloqueable por L2)
-    static bool     r2_macro_active  = false;
-    static bool     r2_macro_blocked = false;
-    static bool     r2_prev_pressed  = false;
-    static uint64_t r2_last_tap_ms   = 0;
-    static bool     r2_tap_state     = false;
+    // Auto-detección del bit del TOUCHPAD
+    static uint16_t        touchpadMask = 0;
 
-    // Turbo triángulo (doble tap)
-    static bool     tri_prev_pressed    = false;
-    static bool     tri_turbo_active    = false;
-    static uint64_t tri_last_press_ms   = 0;
-    static uint64_t tri_last_tap_ms     = 0;
-    static bool     tri_tap_state       = false;
-
-    // Aim assist (stick izquierdo, movimiento polar)
-    static uint64_t aim_last_time_ms = 0;
-    static uint64_t aim_phase_end_ms = 0;
-    static float    aim_angle        = 0.0f;
-    static float    aim_speed        = 0.0f;
-    static int16_t  aim_amp          = 0;
-    static bool     aim_active       = false;
+    // Estado para AIM ASSIST (para que sea más lento/suave)
+    static uint64_t        aim_last_time_ms = 0;
+    static int16_t         aim_jitter_x = 0;
+    static int16_t         aim_jitter_y = 0;
 
     if (gamepad.new_pad_in())
     {
-        // Reinicia todo el reporte
+        // Reinicia todo el reporte (el ctor pone report_size)
         in_report_ = XInput::InReport{};
 
         Gamepad::PadIn gp_in = gamepad.get_pad_in();
         const uint16_t btn   = gp_in.buttons;
 
-        uint64_t now_ms = to_ms_since_boot(get_absolute_time());
+        // =========================================================
+        // 0. AUTO-DETECCIÓN DEL TOUCHPAD (primer bit desconocido)
+        // =========================================================
+        if (touchpadMask == 0)
+        {
+            uint16_t knownMask =
+                Gamepad::BUTTON_A    |
+                Gamepad::BUTTON_B    |
+                Gamepad::BUTTON_X    |
+                Gamepad::BUTTON_Y    |
+                Gamepad::BUTTON_LB   |
+                Gamepad::BUTTON_RB   |
+                Gamepad::BUTTON_L3   |
+                Gamepad::BUTTON_R3   |
+                Gamepad::BUTTON_BACK |
+                Gamepad::BUTTON_START|
+                Gamepad::BUTTON_SYS  |
+                Gamepad::BUTTON_MISC;
+
+            uint16_t unknown = btn & ~knownMask;
+            if (unknown)
+            {
+                for (uint8_t i = 0; i < 16; ++i)
+                {
+                    uint16_t bit = static_cast<uint16_t>(1u << i);
+                    if (unknown & bit)
+                    {
+                        touchpadMask = bit; // este será nuestro TOUCHPAD
+                        break;
+                    }
+                }
+            }
+        }
 
         // =========================================================
-        // 1. TRIGGERS Y ESTADO R2 MACRO
+        // 1. HAIR TRIGGERS
         // =========================================================
         const bool trig_l_pressed = (gp_in.trigger_l != 0);
         const bool trig_r_pressed = (gp_in.trigger_r != 0);
 
-        // Hair trigger "digital": si hay algo de presión → 255
         uint8_t final_trig_l = trig_l_pressed ? 255 : 0;
         uint8_t final_trig_r = trig_r_pressed ? 255 : 0;
 
-        // R2 macro: solo se arma si R2 empieza sin L2.
-        if (trig_r_pressed && !r2_prev_pressed)
-        {
-            if (trig_l_pressed)
-            {
-                // R2 empezó mientras L2 estaba apretado → bloqueamos macro.
-                r2_macro_active  = false;
-                r2_macro_blocked = true;
-            }
-            else
-            {
-                // R2 solo → macro ON (turbo X/A sin anti-recoil)
-                r2_macro_blocked = false;
-                r2_macro_active  = true;
-                r2_tap_state     = true;
-                r2_last_tap_ms   = now_ms;
-            }
-        }
-        else if (!trig_r_pressed && r2_prev_pressed)
-        {
-            // R2 se suelta → reseteamos todo
-            r2_macro_active  = false;
-            r2_macro_blocked = false;
-            r2_tap_state     = false;
-        }
-        r2_prev_pressed = trig_r_pressed;
-
         // =========================================================
-        // 2. STICKS BASE (coordenadas finales que ve el juego)
+        // 2. STICKS BASE EN ESPACIO "FINAL" (el que ve el juego)
         // =========================================================
-        // Stick izquierdo (movimiento / strafe)
-        int16_t base_lx = gp_in.joystick_lx;
-        int16_t base_ly = Range::invert(gp_in.joystick_ly);
-
-        // Stick derecho: deadzone grande para drift, SIN suavizado
-        int16_t base_rx = gp_in.joystick_rx;
-        int16_t base_ry = Range::invert(gp_in.joystick_ry);
-
-        // Deadzone radial ~15 % para el stick derecho (por drift)
-        static const int16_t R_DEADZONE  = 5000; // ~15 % de 32767
-        static const int32_t R_DEADZONE2 =
-            (int32_t)R_DEADZONE * (int32_t)R_DEADZONE;
-
-        int32_t magR2_raw =
-            (int32_t)base_rx * base_rx +
-            (int32_t)base_ry * base_ry;
-
-        if (magR2_raw < R_DEADZONE2)
-        {
-            // Movimiento muy pequeño → lo tratamos como 0 (limpia drift suave)
-            base_rx = 0;
-            base_ry = 0;
-        }
-
-        int16_t out_lx = base_lx;
-        int16_t out_ly = base_ly;
-        int16_t out_rx = base_rx;
-        int16_t out_ry = base_ry;
+        int16_t out_lx = gp_in.joystick_lx;
+        int16_t out_ly = Range::invert(gp_in.joystick_ly);
+        int16_t out_rx = gp_in.joystick_rx;
+        int16_t out_ry = Range::invert(gp_in.joystick_ry);
 
         auto clamp16 = [](int16_t v) -> int16_t {
             if (v < -32768) return -32768;
@@ -133,187 +97,72 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             return v;
         };
 
-        // Magnitud del stick izquierdo (para límites de aim assist)
-        int32_t magL2 =
-            (int32_t)base_lx * base_lx +
-            (int32_t)base_ly * base_ly;
-
         // =========================================================
-        // 3. AIM ASSIST (MEJORADO)
-        //    - Solo cuando R2 y R-stick casi quieto.
-        //    - Fuerza dinámica según movimiento del L-stick.
-        //    - Jitter y timing irregular.
+        // 3. STICKY AIM (JITTER EN STICK IZQUIERDO SOLO CON R2)
+        //    Más FUERTE pero MÁS LENTO:
+        //      - jitter ~20% del rango
+        //      - se actualiza cada ~35 ms
         // =========================================================
+        if (final_trig_r)   // solo cuando disparas con R2
         {
-            // Limites y thresholds
-            static const int16_t AIM_CENTER_MAX  = 30000;  // ~80 %
-            static const int32_t AIM_CENTER_MAX2 =
-                (int32_t)AIM_CENTER_MAX * AIM_CENTER_MAX;
+            uint64_t now_ms = to_ms_since_boot(get_absolute_time());
 
-            // Requerimos R2 y stick derecho casi quieto
-            static const int16_t R_STICK_IDLE = 5000; // ~15% (ajustable)
-            static const int32_t R_STICK_IDLE2 =
-                (int32_t)R_STICK_IDLE * R_STICK_IDLE;
-
-            if (final_trig_r && magL2 <= AIM_CENTER_MAX2 && magR2_raw <= R_STICK_IDLE2)
+            // Cambiamos el vector de jitter solo cada 35 ms aprox.
+            if (now_ms - aim_last_time_ms > 35)
             {
-                if (!aim_active)
-                {
-                    aim_active        = true;
-                    aim_last_time_ms  = now_ms;
-                    // intervalo inicial aleatorio 60..100 ms
-                    aim_phase_end_ms  = now_ms + (60 + (rand() % 41));
-                }
+                aim_last_time_ms = now_ms;
 
-                // Si pasó el intervalo, aplicamos una "micro-ajustada" y calculamos el siguiente intervalo
-                if (now_ms >= aim_phase_end_ms)
-                {
-                    // siguiente intervalo 60..100 ms
-                    aim_phase_end_ms = now_ms + (60 + (rand() % 41));
-
-                    // Magnitud actual del stick izquierdo (float para escala)
-                    float magL = std::sqrt((float)magL2); // 0..~32767
-
-                    // Fuerza dinámica: más ayuda cuando el jugador mueve poco/medio,
-                    // nada cuando mueve mucho (evita pelear contra el jugador).
-                    // Valores en unidades de stick (~0..1400 recomendado)
-                    int dynamic_assist;
-                    if (magL < 6000.0f)           dynamic_assist = 1200; // máximo ayuda
-                    else if (magL < 12000.0f)     dynamic_assist = 700;  // media ayuda
-                    else                          dynamic_assist = 0;    // no ayudar
-
-                    // Jitter pequeño y asimétrico para romper patrones (±100)
-                    int16_t jitter_x = (int16_t)((rand() % 201) - 100);
-                    int16_t jitter_y = (int16_t)((rand() % 201) - 100);
-
-                    // Aplicar "slowdown" proporcional: reducimos la magnitud del stick ligeramente
-                    // scale = 1 - (dynamic_assist / 32767). Si dynamic_assist==0 → scale=1 (sin cambio).
-                    float scale = 1.0f;
-                    if (dynamic_assist > 0)
-                    {
-                        scale = 1.0f - (static_cast<float>(dynamic_assist) / 32767.0f);
-                        if (scale < 0.65f) scale = 0.65f; // límite para no anular el control
-                    }
-
-                    // Aplicamos la escala y el jitter respetando la dirección original del jugador.
-                    out_lx = clamp16(static_cast<int16_t>(static_cast<float>(out_lx) * scale) + jitter_x);
-                    out_ly = clamp16(static_cast<int16_t>(static_cast<float>(out_ly) * scale) + jitter_y);
-                }
-                // si aún no toca el intervalo, no cambiamos nada hasta el próximo tick
+                const int16_t JITTER = 6000; // fuerza del aim assist
+                aim_jitter_x = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
+                aim_jitter_y = static_cast<int16_t>((rand() % (2 * JITTER + 1)) - JITTER);
             }
-            else
-            {
-                // Reset del patrón si no hay R2 o stick fuera del centro o R-stick activo
-                aim_active       = false;
-                aim_phase_end_ms = 0;
-                aim_last_time_ms = 0;
-                out_lx           = base_lx;
-                out_ly           = base_ly;
-            }
+
+            out_lx = clamp16(out_lx + aim_jitter_x);
+            out_ly = clamp16(out_ly + aim_jitter_y);
+        }
+        else
+        {
+            // Sin disparar, no queremos jitter
+            aim_jitter_x = 0;
+            aim_jitter_y = 0;
         }
 
         // =========================================================
-        // 4. ANTI-RECOIL (MEJORADO / HUMANO)
+        // 4. ANTI-RECOIL DINÁMICO (EJE Y DERECHO, CUANDO R2)
         //
-        //   - Escala según cuánto jala el jugador.
-        //   - Ruido por bala.
-        //   - No actúa si el jugador ya compensa.
+        //   - Primer segundo: fuerte
+        //   - Luego: más suave
+        //   Antes lo sumábamos con el signo equivocado (subía),
+        //   ahora lo RESTAMOS para que baje la mira.
         // =========================================================
+        if (final_trig_r)
         {
-            // Parámetros temporales (ms/us como en original)
-            static const int16_t RECOIL_MAX    = 31128;   // ~95 %
-            static const int64_t RAMP_US      = 100000;  // 0.1 s
-            static const int64_t STRONG_US    = 1250000; // 1.5 s (plato fuerte)
-            static const int64_t DECAY_US     = 1000000; // 1.0 s (fuerte → débil)
-
-            // Valores revisados para sensación "realista"
-            static const int16_t RECOIL_STRONG_BASE = 8000; // base fuerte ~7000-8500 recomendado
-            static const int16_t RECOIL_WEAK_BASE   = 4000; // débil objetivo
-
-            int16_t abs_ry = (base_ry >= 0) ? base_ry : (int16_t)-base_ry;
-
-            if (final_trig_r && !r2_macro_active)
+            if (!is_shooting)
             {
-                if (!is_shooting)
-                {
-                    is_shooting     = true;
-                    shot_start_time = get_absolute_time();
-                }
-
-                // Si el jugador ya está compensando fuerte (tirando hacia abajo), no interfieras.
-                // Umbral ajustable: si ya baja más de ~4000 unidades, estamos dejando que el jugador compense.
-                if (base_ry < -4000)
-                {
-                    out_ry = base_ry;
-                }
-                else if (abs_ry < RECOIL_MAX)
-                {
-                    int64_t t_us = absolute_time_diff_us(
-                        shot_start_time,
-                        get_absolute_time()
-                    );
-
-                    // Recoil "base" según tiempo (misma lógica que antes pero con valores base distintos)
-                    float recoil_base_f;
-                    if (t_us < RAMP_US)
-                    {
-                        recoil_base_f = (static_cast<float>(RECOIL_STRONG_BASE) * (float)t_us) / (float)RAMP_US;
-                    }
-                    else if (t_us < STRONG_US)
-                    {
-                        recoil_base_f = static_cast<float>(RECOIL_STRONG_BASE);
-                    }
-                    else
-                    {
-                        int64_t t2 = t_us - STRONG_US;
-                        if (t2 >= DECAY_US)
-                        {
-                            recoil_base_f = static_cast<float>(RECOIL_WEAK_BASE);
-                        }
-                        else
-                        {
-                            recoil_base_f = static_cast<float>(RECOIL_STRONG_BASE) +
-                                (static_cast<float>(RECOIL_WEAK_BASE - RECOIL_STRONG_BASE) * (float)t2) / (float)DECAY_US;
-                        }
-                    }
-
-                    // Ruido por bala (pequeña variación)
-                    int16_t recoil_noise = (int16_t)((rand() % 301) - 150); // -150 .. +150
-
-                    // Escala según cuánto jala el jugador (si jala, ayudamos menos)
-                    float player_pull = static_cast<float>(abs_ry);
-                    float recoil_scale;
-                    if (player_pull < 2000.0f)       recoil_scale = 1.0f;
-                    else if (player_pull < 6000.0f)  recoil_scale = 0.7f;
-                    else                              recoil_scale = 0.4f;
-
-                    // Combina todo y asegura tipo/int
-                    float recoil_f = recoil_base_f + static_cast<float>(recoil_noise);
-                    recoil_f *= recoil_scale;
-
-                    int16_t recoil_force = static_cast<int16_t>(recoil_f + 0.5f);
-                    if (recoil_force < 0) recoil_force = 0; // por seguridad
-
-                    // Restamos para empujar hacia ABAJO (igual que antes)
-                    int32_t val = (int32_t)base_ry - (int32_t)recoil_force;
-
-                    // Limitamos a ±RECOIL_MAX
-                    if (val < -RECOIL_MAX) val = -RECOIL_MAX;
-                    if (val >  RECOIL_MAX) val =  RECOIL_MAX;
-
-                    out_ry = (int16_t)val;
-                }
-                else
-                {
-                    // Ya estás >95 % → no tocamos el stick
-                    out_ry = base_ry;
-                }
+                is_shooting     = true;
+                shot_start_time = get_absolute_time();
             }
-            else
-            {
-                is_shooting = false;
-                out_ry      = base_ry;
-            }
+
+            int64_t time_shooting_us = absolute_time_diff_us(
+                shot_start_time,
+                get_absolute_time()
+            );
+
+            // Fuerzas fuertes para que se note bien
+            const int16_t RECOIL_STRONG = 12000; // primer segundo
+            const int16_t RECOIL_WEAK   =  6000; // después
+
+            int16_t recoil_force = (time_shooting_us < 1000000)
+                                 ? RECOIL_STRONG
+                                 : RECOIL_WEAK;
+
+            // ANTES: out_ry = clamp16(out_ry + recoil_force);  // subía
+            // AHORA: restamos para que empuje hacia ABAJO
+            out_ry = clamp16(out_ry - recoil_force);
+        }
+        else
+        {
+            is_shooting = false;
         }
 
         // =========================================================
@@ -352,134 +201,85 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 6. BOTONES BÁSICOS + REMAPS
         // =========================================================
-        const bool lb_pressed   = (btn & Gamepad::BUTTON_LB)   != 0;
-        const bool rb_pressed   = (btn & Gamepad::BUTTON_RB)   != 0;
-        const bool tri_pressed  = (btn & Gamepad::BUTTON_Y)    != 0;
-        const bool sys_pressed  = (btn & Gamepad::BUTTON_SYS)  != 0;
-        const bool back_pressed = (btn & Gamepad::BUTTON_BACK) != 0;
-        const bool l3_pressed   = (btn & Gamepad::BUTTON_L3)   != 0;
-        const bool r3_pressed   = (btn & Gamepad::BUTTON_R3)   != 0;
+        // L1 físico: SOLO macro (abajo), NO manda LB normal aquí
 
         // R1 normal
-        if (rb_pressed)                      in_report_.buttons[1] |= XInput::Buttons1::RB;
+        if (btn & Gamepad::BUTTON_RB)    in_report_.buttons[1] |= XInput::Buttons1::RB;
 
-        // X / Cuadrado / Círculo normales
-        if (btn & Gamepad::BUTTON_X)         in_report_.buttons[1] |= XInput::Buttons1::X;
-        if (btn & Gamepad::BUTTON_A)         in_report_.buttons[1] |= XInput::Buttons1::A;
-        if (btn & Gamepad::BUTTON_B)         in_report_.buttons[1] |= XInput::Buttons1::B;
+        // A/B/X/Y
+        if (btn & Gamepad::BUTTON_X)     in_report_.buttons[1] |= XInput::Buttons1::X;
+        if (btn & Gamepad::BUTTON_A)     in_report_.buttons[1] |= XInput::Buttons1::A;
+        if (btn & Gamepad::BUTTON_Y)     in_report_.buttons[1] |= XInput::Buttons1::Y;
+        if (btn & Gamepad::BUTTON_B)     in_report_.buttons[1] |= XInput::Buttons1::B;
 
-        // Triángulo: normal + modo turbo (doble tap)
-        {
-            if (tri_pressed && !tri_prev_pressed)
-            {
-                uint64_t diff = now_ms - tri_last_press_ms;
-                if (diff <= 300)
-                {
-                    tri_turbo_active = true;
-                    tri_tap_state    = true;
-                    tri_last_tap_ms  = now_ms;
-                }
-                tri_last_press_ms = now_ms;
-            }
-
-            if (!tri_pressed)
-            {
-                tri_turbo_active = false;
-            }
-
-            tri_prev_pressed = tri_pressed;
-
-            if (tri_pressed)
-            {
-                if (tri_turbo_active)
-                {
-                    if (now_ms - tri_last_tap_ms > 50)
-                    {
-                        tri_last_tap_ms = now_ms;
-                        tri_tap_state   = !tri_tap_state;
-                    }
-                    if (tri_tap_state)
-                    {
-                        in_report_.buttons[1] |= XInput::Buttons1::Y;
-                    }
-                }
-                else
-                {
-                    in_report_.buttons[1] |= XInput::Buttons1::Y;
-                }
-            }
-        }
-
-        // Sticks pulsados (L3 ahora solo manual, SIN autosprint ni macro)
-        if (l3_pressed)                      in_report_.buttons[0] |= XInput::Buttons0::L3;
-        if (r3_pressed)                      in_report_.buttons[0] |= XInput::Buttons0::R3;
+        // Sticks pulsados
+        if (btn & Gamepad::BUTTON_L3)    in_report_.buttons[0] |= XInput::Buttons0::L3;
+        if (btn & Gamepad::BUTTON_R3)    in_report_.buttons[0] |= XInput::Buttons0::R3;
 
         // START
-        if (btn & Gamepad::BUTTON_START)     in_report_.buttons[0] |= XInput::Buttons0::START;
+        if (btn & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
 
-        // Botón PlayStation: HOME + D-Pad izquierda y derecha mantenidos
-        if (sys_pressed)
+        // --- BOTÓN PLAYSTATION (SYS) ---
+        // HOME + D-Pad Izq + Der
+        if (btn & Gamepad::BUTTON_SYS)
         {
             in_report_.buttons[1] |= XInput::Buttons1::HOME;
             in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
                                       XInput::Buttons0::DPAD_RIGHT);
         }
 
-        // SELECT → LB virtual (L1)
-        if (back_pressed)
+        // --- REMAP: SELECT → LB (L1 virtual) ---
+        if (btn & Gamepad::BUTTON_BACK)
         {
             in_report_.buttons[1] |= XInput::Buttons1::LB;
+            // No ponemos Buttons0::BACK aquí
         }
 
-        // MUTE (BUTTON_MISC) → BACK
-        if (btn & Gamepad::BUTTON_MISC)
+        // --- TOUCHPAD DETECTADO → BACK/SELECT ---
+        if (touchpadMask && (btn & touchpadMask))
         {
             in_report_.buttons[0] |= XInput::Buttons0::BACK;
         }
 
+        // MUTE (BUTTON_MISC): ahora no hace nada especial en XInput
+
         // =========================================================
-        // 7. MACRO R2 → TURBO X/A (solo cuando NO está bloqueado)
+        // 7. DROP SHOT (R2 sin L2) -> B
         // =========================================================
-        if (r2_macro_active && !r2_macro_blocked)
+        if (final_trig_r && !final_trig_l)
         {
-            if (now_ms - r2_last_tap_ms > 50)
-            {
-                r2_last_tap_ms = now_ms;
-                r2_tap_state   = !r2_tap_state;
-            }
-            if (r2_tap_state)
-            {
-                in_report_.buttons[1] |= XInput::Buttons1::A;
-            }
+            in_report_.buttons[1] |= XInput::Buttons1::B;
         }
 
         // =========================================================
-        // 8. MACRO L1 (solo L1)
-        //    - L1: turbo A con 1 s de cola
+        // 8. MACRO L1 (LB físico) -> SPAM JUMP (A)
         // =========================================================
-        if (lb_pressed)
+        if (btn & Gamepad::BUTTON_LB)
         {
-            jump_l1_macro_active = true;
-            jump_l1_stop_time_ms = now_ms + 1000; // dura 1s después de soltar
+            jump_macro_active = true;
+            jump_end_time     = make_timeout_time_ms(1000); // 1 s después de soltar
         }
 
-        if (jump_l1_macro_active)
+        if (jump_macro_active)
         {
-            if (now_ms - jump_l1_last_tap_ms > 50)
+            uint64_t now = to_ms_since_boot(get_absolute_time());
+
+            // Velocidad del spam (50 ms ≈ 20 pulsos/seg)
+            if (now - last_tap_time > 50)
             {
-                jump_l1_last_tap_ms = now_ms;
-                jump_l1_tap_state   = !jump_l1_tap_state;
+                tap_state     = !tap_state;
+                last_tap_time = now;
             }
 
-            if (jump_l1_tap_state)
+            if (tap_state)
             {
                 in_report_.buttons[1] |= XInput::Buttons1::A;
             }
 
-            if (!lb_pressed && now_ms >= jump_l1_stop_time_ms)
+            if (!(btn & Gamepad::BUTTON_LB) && time_reached(jump_end_time))
             {
-                jump_l1_macro_active = false;
-                jump_l1_tap_state    = false;
+                jump_macro_active = false;
+                tap_state         = false;
             }
         }
 
@@ -558,8 +358,7 @@ bool XInputDevice::vendor_control_xfer_cb(uint8_t rhport,
     return false;
 }
 
-const uint16_t * XInputDevice::get_descriptor_string_cb(uint8_t index,
-                                                        uint16_t langid)
+const uint16_t * XInputDevice::get_descriptor_string_cb(uint8_t index, uint16_t langid)
 {
     (void)langid;
     const char *value = reinterpret_cast<const char*>(XInput::DESC_STRING[index]);
