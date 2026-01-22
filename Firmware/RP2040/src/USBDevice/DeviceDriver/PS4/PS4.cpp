@@ -80,8 +80,7 @@ static inline uint8_t apply_stick_custom_curve(int16_t in,
     return map_signed_to_uint8(signed_out);
 }
 
-// Nueva: función Steam-style usando potencia (gamma).
-// Garantiza out_frac = 1 cuando adj == 1 si sensitivity == 1.
+// Nueva: función Steam-style usando potencia (gamma) — por eje (no radial)
 static inline uint8_t apply_stick_steam_style(int16_t in, float deadzone_fraction,
                                               float gamma, float sensitivity = 1.0f)
 {
@@ -103,6 +102,55 @@ static inline uint8_t apply_stick_steam_style(int16_t in, float deadzone_fractio
 
     float signed_out = (v < 0.0f) ? -out_frac : out_frac;
     return map_signed_to_uint8(signed_out);
+}
+
+// Nueva: versión RADIAL (circular) — remapea magnitud y preserva dirección.
+// input: in_x, in_y (int16), deadzone_fraction sobre la MAGNITUD, gamma sobre la MAGNITUD.
+// output: out_x, out_y (uint8) - ya mapeados a 0..255 con centro 128.
+static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
+                                            float deadzone_fraction, float gamma, float sensitivity,
+                                            uint8_t &out_x, uint8_t &out_y)
+{
+    constexpr float INT16_MAX_F = 32767.0f;
+    float vx = static_cast<float>(in_x) / INT16_MAX_F; // [-1..1]
+    float vy = static_cast<float>(in_y) / INT16_MAX_F; // [-1..1]
+
+    float mag = std::sqrt(vx*vx + vy*vy);
+    if (mag <= deadzone_fraction || mag == 0.0f)
+    {
+        out_x = 128;
+        out_y = 128;
+        return;
+    }
+
+    // Clamp mag por si valores raw > 1 debido a -32768 etc.
+    if (mag > 1.0f) mag = 1.0f;
+
+    // Remapear magnitud fuera de deadzone a [0..1]
+    float adj = (mag - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
+
+    // Curve: potencia gamma sobre la magnitud
+    float out_frac = std::pow(adj, gamma);
+
+    // Aplicar sensibilidad y clamp (sens=1 -> out_frac==1 si adj==1)
+    out_frac *= sensitivity;
+    if (out_frac > 1.0f) out_frac = 1.0f;
+    if (out_frac < 0.0f) out_frac = 0.0f;
+
+    // Reconstruir componentes manteniendo dirección:
+    float scale = out_frac / mag; // mag>0
+    float sx = vx * scale;
+    float sy = vy * scale;
+
+    // Clamp just in case
+    if (sx >  1.0f) sx =  1.0f;
+    if (sx < -1.0f) sx = -1.0f;
+    if (sy >  1.0f) sy =  1.0f;
+    if (sy < -1.0f) sy = -1.0f;
+
+    out_x = map_signed_to_uint8(sx);
+    out_y = map_signed_to_uint8(sy);
 }
 
 void PS4Device::initialize()
@@ -178,20 +226,23 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
     // ------------------ Sticks analógicos (0-255) con ajustes solicitados ---------------
-    // Usamos Steam-style (gamma) en ambos para llegar al 100% en extremos.
+    // Usamos mapeo RADIAL (deadzone + gamma sobre la magnitud) para preservar diagonal.
     // LEFT: "Ancho" -> gamma = 1.8
     // RIGHT: "Relajado" -> gamma = 1.3
-    constexpr float left_deadzone   = 0.03f;  // 3%
-    constexpr float right_deadzone  = 0.02f;  // 2%
+    constexpr float left_deadzone   = 0.03f;  // 3% (radial)
+    constexpr float right_deadzone  = 0.02f;  // 2% (radial)
     constexpr float left_gamma      = 1.8f;   // "Ancho"
     constexpr float right_gamma     = 1.3f;   // "Relajado"
-    constexpr float both_sensitivity = 1.0f;  // 1.0 para que lleguen al 100%
+    constexpr float both_sensitivity = 1.0f;  // 1.0 para que lleguen al 100% si mag==1
 
-    report_in_.leftStickX  = apply_stick_steam_style(gp_in.joystick_lx, left_deadzone,  left_gamma,  both_sensitivity);
-    report_in_.leftStickY  = apply_stick_steam_style(gp_in.joystick_ly, left_deadzone,  left_gamma,  both_sensitivity);
+    // Aplicar mapeo radial para preservar dirección y asegurar 100% en extremos
+    apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
+                             left_deadzone, left_gamma, both_sensitivity,
+                             report_in_.leftStickX, report_in_.leftStickY);
 
-    report_in_.rightStickX = apply_stick_steam_style(gp_in.joystick_rx, right_deadzone, right_gamma, both_sensitivity);
-    report_in_.rightStickY = apply_stick_steam_style(gp_in.joystick_ry, right_deadzone, right_gamma, both_sensitivity);
+    apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
+                             right_deadzone, right_gamma, both_sensitivity,
+                             report_in_.rightStickX, report_in_.rightStickY);
 
     // ------------------ D-Pad → HAT ------------------
     switch (gp_in.dpad)
