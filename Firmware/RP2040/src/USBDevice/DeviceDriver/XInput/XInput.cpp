@@ -40,7 +40,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     static uint64_t tri_last_tap_ms     = 0;
     static bool     tri_tap_state       = false;
 
-    // Aim assist (ultra suave y solo horizontal)
+    // Aim assist (horizontal, suave pero un poco más amplio)
     static uint64_t aim_last_time_ms = 0;
     static int16_t  aim_direction    = 1;  // 1 (derecha), -1 (izquierda)
     static bool     aim_active       = false;
@@ -129,13 +129,14 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             (int32_t)base_ly * base_ly;
 
         // =========================================================
-        // 3. AIM ASSIST ULTRA SUAVE, SOLO HORIZONTAL
+        // 3. AIM ASSIST HORIZONTAL, SUAVE PERO MÁS AMPLIO
         // =========================================================
         {
-            static const int16_t AIM_CENTER_MAX  = 30000;  // ~80 %
+            static const int16_t AIM_CENTER_MAX  = 30000; // ~80%
             static const int32_t AIM_CENTER_MAX2 =
-                (int32_t)AIM_CENTER_MAX * AIM_CENTER_MAX;
-            static const int16_t AIM_ASSIST_PULSE = 500;   // MUY BAJO, AJUSTABLE
+                (int32_t)AIM_CENTER_MAX * (int32_t)AIM_CENTER_MAX;
+            static const int16_t AIM_ASSIST_PULSE = 900;   // UN POCO MÁS FUERTE
+            static const uint64_t AIM_ASSIST_INTERVAL = 100; // Cambio cada 100ms
 
             if (final_trig_r && magL2 <= AIM_CENTER_MAX2)
             {
@@ -146,14 +147,12 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                     aim_direction    = 1;
                 }
 
-                // Cambia de dirección cada 90 ms (para microcorrección)
-                if (now_ms - aim_last_time_ms > 90)
+                if (now_ms - aim_last_time_ms > AIM_ASSIST_INTERVAL)
                 {
                     aim_last_time_ms = now_ms;
-                    aim_direction = -aim_direction; // Invierte dirección
+                    aim_direction = -aim_direction;
                 }
 
-                // Aplica micro pulse solo en X, no mueve en el eje Y
                 out_lx = clamp16(static_cast<int16_t>(out_lx + aim_direction * AIM_ASSIST_PULSE));
             }
             else
