@@ -176,7 +176,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     static bool     mutePrev          = false;
     static uint32_t muteMacroTicks    = 0;
     // Suponiendo que process() se llama aprox. cada 1 ms.
-    static constexpr uint32_t MUTE_MACRO_DURATION_TICKS = 477;
+    static constexpr uint32_t MUTE_MACRO_DURATION_TICKS = 470;
 
     // ---- Nueva macro PS -> R1 + L2 + Triangle (400 ms) ----
     static bool     psPrev            = false;
@@ -414,3 +414,4 @@ const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
 {
     return nullptr;
 }
+
