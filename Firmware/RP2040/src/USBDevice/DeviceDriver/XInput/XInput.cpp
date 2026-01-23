@@ -235,8 +235,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             );
 
             // Fuerzas fuertes para que se note bien
-            const int32_t RECOIL_STRONG = 8000; // primer segundo
-            const int32_t RECOIL_WEAK   = 6000; // después
+            const int32_t RECOIL_STRONG = 8200; // primer segundo
+            const int32_t RECOIL_WEAK   = 8000; // después
 
             int32_t recoil_force = (time_shooting_us < 1000000)
                                  ? RECOIL_STRONG
