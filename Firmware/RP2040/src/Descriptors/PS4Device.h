@@ -1,614 +1,465 @@
-#ifndef _PS4_DEVICE_DESCRIPTORS_H_
-#define _PS4_DEVICE_DESCRIPTORS_H_
+#include <cstring>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 
-#include <stdint.h>
+#include "pico/time.h" // make_timeout_time_ms, time_reached
 
-namespace PS4Dev
+#include "USBDevice/DeviceDriver/PS4/PS4.h"
+
+// Helper: curvas / mapeos de sensibilidad para sticks
+
+static inline uint8_t map_signed_to_uint8(float signed_val)
 {
-    static constexpr uint8_t JOYSTICK_MID = 0x80;
-    static constexpr uint8_t JOYSTICK_MIN = 0x00;
-    static constexpr uint8_t JOYSTICK_MAX = 0xFF;
+    // signed_val en [-1, 1], centro = 0 -> 128
+    float mapped = signed_val * 127.0f + 128.0f;
+    int out = static_cast<int>(std::round(mapped));
+    if (out < 0) out = 0;
+    if (out > 255) out = 255;
+    return static_cast<uint8_t>(out);
+}
 
-    // Valores de HAT (dpad) como en GP2040-CE
-    enum Hat : uint8_t
+// Helpers para extremos exactos (normalizados usando la misma fórmula inversa)
+static inline uint8_t max_positive_byte() { return 255; } // +1.0
+static inline uint8_t max_negative_byte() { return 1;   } // -1.0 (128 + 127*(-1) = 1)
+
+static inline uint8_t apply_stick_linear(int16_t in, float sensitivity, float deadzone_fraction)
+{
+    constexpr float INT16_MAX_F = 32767.0f;
+    float v = static_cast<float>(in) / INT16_MAX_F; // [-1,1]
+    float abs_v = std::fabs(v);
+    if (abs_v <= deadzone_fraction)
     {
-        HAT_UP        = 0x00,
-        HAT_UP_RIGHT  = 0x01,
-        HAT_RIGHT     = 0x02,
-        HAT_DOWN_RIGHT= 0x03,
-        HAT_DOWN      = 0x04,
-        HAT_DOWN_LEFT = 0x05,
-        HAT_LEFT      = 0x06,
-        HAT_UP_LEFT   = 0x07,
-        HAT_CENTER    = 0x0F, // Null state (sin pulsar)
-    };
+        return 128;
+    }
 
-    struct __attribute__((packed)) TouchpadXY
+    // Remapear fuera de deadzone a [0..1]
+    float adj = (abs_v - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
+
+    // Aplicar sensibilidad (factor linear)
+    float scaled = adj * sensitivity;
+    if (scaled > 1.0f) scaled = 1.0f;
+
+    float signed_scaled = (v < 0.0f) ? -scaled : scaled;
+    return map_signed_to_uint8(signed_scaled);
+}
+
+static inline uint8_t apply_stick_custom_curve(int16_t in,
+                                               float mid_in_frac, float mid_out_frac,
+                                               float deadzone_fraction)
+{
+    // mid_in_frac, mid_out_frac en [0..1]
+    constexpr float INT16_MAX_F = 32767.0f;
+    float v = static_cast<float>(in) / INT16_MAX_F; // [-1,1]
+    float abs_v = std::fabs(v);
+    if (abs_v <= deadzone_fraction)
     {
-        uint8_t counter : 7;
-        uint8_t unpressed : 1;
+        return 128;
+    }
 
-        // 12 bit X, seguido de 12 bit Y
-        uint8_t data[3];
+    // Remapear fuera de deadzone a [0..1]
+    float adj = (abs_v - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
 
-        void set_x(uint16_t x)
-        {
-            data[0] = x & 0xff;
-            data[1] = (data[1] & 0xf0) | ((x >> 8) & 0xf);
-        }
-
-        void set_y(uint16_t y)
-        {
-            data[1] = (data[1] & 0x0f) | ((y & 0xf) << 4);
-            data[2] = y >> 4;
-        }
-    };
-
-    struct __attribute__((packed)) TouchpadData
+    float out_frac;
+    // Piecewise linear between (0,0), (mid_in, mid_out), (1,1)
+    if (adj <= mid_in_frac)
     {
-        TouchpadXY p1;
-        TouchpadXY p2;
-    };
-
-    struct __attribute__((packed)) PSSensor
+        if (mid_in_frac <= 0.0f) out_frac = mid_out_frac; // evita división por 0
+        else out_frac = (mid_out_frac / mid_in_frac) * adj;
+    }
+    else
     {
-        int16_t x;
-        int16_t y;
-        int16_t z;
-    };
+        // tramo (mid_in_frac..1) -> (mid_out_frac..1)
+        float denom = (1.0f - mid_in_frac);
+        if (denom <= 0.0f)
+            out_frac = 1.0f;
+        else
+            out_frac = mid_out_frac + ((1.0f - mid_out_frac) / denom) * (adj - mid_in_frac);
+    }
 
-    struct __attribute__((packed)) PSSensorData
+    // Clamp por si acaso
+    out_frac = std::fmax(0.0f, std::fmin(1.0f, out_frac));
+
+    float signed_out = (v < 0.0f) ? -out_frac : out_frac;
+    return map_signed_to_uint8(signed_out);
+}
+
+// Nueva: función Steam-style usando potencia (gamma) — por eje (no radial)
+static inline uint8_t apply_stick_steam_style(int16_t in, float deadzone_fraction,
+                                              float gamma, float sensitivity = 1.0f)
+{
+    constexpr float INT16_MAX_F = 32767.0f;
+    float v = static_cast<float>(in) / INT16_MAX_F; // [-1,1]
+    float abs_v = std::fabs(v);
+    if (abs_v <= deadzone_fraction) return 128;
+
+    // Remapear fuera de deadzone a [0..1]
+    float adj = (abs_v - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
+
+    // Curva Steam-style: potencia gamma
+    float out_frac = std::pow(adj, gamma);
+
+    // Aplicar sensibilidad y clamp
+    out_frac *= sensitivity;
+    out_frac = std::fmax(0.0f, std::fmin(1.0f, out_frac));
+
+    float signed_out = (v < 0.0f) ? -out_frac : out_frac;
+    return map_signed_to_uint8(signed_out);
+}
+
+// Nueva: versión RADIAL (circular) — remapea magnitud y preserva dirección.
+// Ahora: cuando snapea a tope, ESCRIBE los bytes extremos exactos (1 o 255)
+// para garantizar que la lectura normalizada sea exactamente ±1.0.
+static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
+                                            float deadzone_fraction, float gamma, float sensitivity,
+                                            uint8_t &out_x, uint8_t &out_y)
+{
+    constexpr float INT16_MAX_F = 32767.0f;
+    // Umbral y parámetros para snap y axis-snap
+    constexpr float SNAP_TO_EDGE_THRESHOLD = 0.98f; // si mag >= esto, snap a 100%
+    constexpr float AXIS_SNAP_MIN_OTHER_AXIS = 0.05f; // si el otro eje está por debajo de esto
+    constexpr float AXIS_SNAP_MAIN_AXIS = 0.95f;      // y el eje principal >= esto -> snap
+
+    float vx = static_cast<float>(in_x) / INT16_MAX_F; // [-1..1]
+    float vy = static_cast<float>(in_y) / INT16_MAX_F; // [-1..1]
+
+    float mag = std::sqrt(vx*vx + vy*vy);
+    if (mag <= deadzone_fraction || mag == 0.0f)
     {
-        uint16_t battery;
-        PSSensor gyroscope;
-        PSSensor accelerometer;
-        uint8_t misc[4];
-        uint8_t powerLevel : 4;
-        uint8_t charging : 1;
-        uint8_t headphones : 1;
-        uint8_t microphone : 1;
-        uint8_t extension : 1;
-        uint8_t extData0 : 1;
-        uint8_t extData1 : 1;
-        uint8_t notConnected : 1;
-        uint8_t extData3 : 5;
-        uint8_t misc2;
-    };
+        out_x = 128;
+        out_y = 128;
+        return;
+    }
 
-    // ====== ESTE ES EL REPORTE PRINCIPAL (equivalente a PS4Report en GP2040-CE) ======
-    struct __attribute__((packed)) InReport
+    // Clamp mag por si valores raw > 1 debido a -32768 etc.
+    if (mag > 1.0f) mag = 1.0f;
+
+    // AXIS SNAP: si un eje casi 0 y el otro cerca del tope, forzamos ese eje a ±1 exacto.
+    if (std::fabs(vx) <= AXIS_SNAP_MIN_OTHER_AXIS && std::fabs(vy) >= AXIS_SNAP_MAIN_AXIS)
     {
-        uint8_t reportID;
-        uint8_t leftStickX;
-        uint8_t leftStickY;
-        uint8_t rightStickX;
-        uint8_t rightStickY;
+        // forzamos Y al extremo con byte exacto; X a centro (128)
+        out_x = 128;
+        out_y = (vy < 0.0f) ? max_negative_byte() : max_positive_byte();
+        return;
+    }
+    if (std::fabs(vy) <= AXIS_SNAP_MIN_OTHER_AXIS && std::fabs(vx) >= AXIS_SNAP_MAIN_AXIS)
+    {
+        // forzamos X al extremo con byte exacto; Y a centro (128)
+        out_x = (vx < 0.0f) ? max_negative_byte() : max_positive_byte();
+        out_y = 128;
+        return;
+    }
 
-        // 4 bits para el d-pad (hat)
-        uint8_t dpad : 4;
-
-        // 14 bits para botones (layout GP2040-CE)
-        uint16_t buttonWest : 1;      // Square
-        uint16_t buttonSouth : 1;     // Cross
-        uint16_t buttonEast : 1;      // Circle
-        uint16_t buttonNorth : 1;     // Triangle
-        uint16_t buttonL1 : 1;
-        uint16_t buttonR1 : 1;
-        uint16_t buttonL2 : 1;
-        uint16_t buttonR2 : 1;
-        uint16_t buttonSelect : 1;    // Share
-        uint16_t buttonStart : 1;     // Options
-        uint16_t buttonL3 : 1;
-        uint16_t buttonR3 : 1;
-        uint16_t buttonHome : 1;      // PS
-        uint16_t buttonTouchpad : 1;
-
-        // 6 bits: contador de reportes
-        uint8_t reportCounter : 6;
-
-        // Los 2 bits que sobran se usan internamente como padding
-        uint8_t leftTrigger : 8;
-        uint8_t rightTrigger : 8;
-
-        // Vendor specific block (54 bytes)
-        union
-        {
-            uint8_t miscData[54];
-
-            struct __attribute__((packed))
-            {
-                // 16 bit timing counter
-                uint16_t axisTiming;
-
-                PSSensorData sensorData;
-
-                uint8_t touchpadActive : 2;
-                uint8_t padding : 6;
-                uint8_t tpadIncrement;
-                TouchpadData touchpadData;
-
-                uint8_t mystery2[21];
-            } gamepad;
-
-            struct __attribute__((packed))
-            {
-                uint8_t mystery0[22];
-
-                uint8_t powerLevel : 4;
-                uint8_t : 4;
-
-                uint8_t mystery1[10];
-
-                uint8_t pickup;
-                uint8_t whammy;
-                uint8_t tilt;
-
-                union
-                {
-                    uint8_t fretValue;
-
-                    struct __attribute__((packed))
-                    {
-                        uint8_t green : 1;
-                        uint8_t red : 1;
-                        uint8_t yellow : 1;
-                        uint8_t blue : 1;
-                        uint8_t orange : 1;
-                        uint8_t : 3;
-                    } frets;
-                };
-
-                union
-                {
-                    uint8_t soloFretValue;
-
-                    struct __attribute__((packed))
-                    {
-                        uint8_t green : 1;
-                        uint8_t red : 1;
-                        uint8_t yellow : 1;
-                        uint8_t blue : 1;
-                        uint8_t orange : 1;
-                        uint8_t : 3;
-                    } soloFrets;
-                };
-
-                uint8_t mystery2[14];
-            } guitar;
-
-            struct __attribute__((packed))
-            {
-                uint8_t mystery0[22];
-
-                uint8_t powerLevel : 4;
-                uint8_t : 4;
-
-                uint8_t mystery1[10];
-
-                uint8_t velocityDrumRed;
-                uint8_t velocityDrumBlue;
-                uint8_t velocityDrumYellow;
-                uint8_t velocityDrumGreen;
-
-                uint8_t velocityCymbalYellow;
-                uint8_t velocityCymbalBlue;
-                uint8_t velocityCymbalGreen;
-
-                uint8_t mystery2[12];
-            } drums;
-
-            struct __attribute__((packed))
-            {
-                uint8_t mystery0[22];
-
-                uint8_t powerLevel : 4;
-                uint8_t : 4;
-
-                uint8_t mystery1[10];
-
-                uint16_t joystickX;
-                uint16_t joystickY;
-                uint8_t twistRudder;
-                uint8_t throttle;
-                uint8_t rockerSwitch;
-
-                uint8_t pedalRudder;
-                uint8_t pedalLeft;
-                uint8_t pedalRight;
-            } hotas;
-
-            struct __attribute__((packed))
-            {
-                uint8_t mystery0[22];
-
-                uint8_t powerLevel : 4;
-                uint8_t : 4;
-
-                uint8_t mystery1[10];
-
-                uint16_t steeringWheel;
-                uint16_t gasPedal;
-                uint16_t brakePedal;
-                uint16_t clutchPedal; // ?
-
-                union
-                {
-                    uint8_t shifterValue;
-
-                    struct __attribute__((packed))
-                    {
-                        uint8_t shifterGear1 : 1;
-                        uint8_t shifterGear2 : 1;
-                        uint8_t shifterGear3 : 1;
-                        uint8_t shifterGear4 : 1;
-                        uint8_t shifterGear5 : 1;
-                        uint8_t shifterGear6 : 1;
-                        uint8_t shifterGearR : 1;
-                        uint8_t : 1;
-                    } shifter;
-                };
-
-                uint16_t unknownVal;
-
-                uint8_t buttonDialEnter : 1;
-                uint8_t buttonDialDown : 1;
-                uint8_t buttonDialUp : 1;
-                uint8_t buttonMinus : 1;
-                uint8_t buttonPlus : 1;
-
-                uint8_t : 3;
-
-                uint8_t mystery2[7];
-            } wheel;
+    // Magnitude snap: si estamos muy cerca del borde, forzamos vector unitario
+    if (mag >= SNAP_TO_EDGE_THRESHOLD)
+    {
+        float ux = vx / mag;
+        float uy = vy / mag;
+        // Para mantener la dirección pero asegurar extremos exactos:
+        // Si ux/uy están lo bastante cerca de ±1.0 y la componente dominante lo justifica,
+        // escribimos el byte extremo exacto en esa componente. Si es diagonal, escribimos
+        // ambos componentes usando map_signed_to_uint8(ux) — pero para máxima seguridad,
+        // si ux ó uy ≈ ±1.0 lo convertimos al byte extremo exacto.
+        auto write_comp = [](float c)->uint8_t {
+            if (c >= 0.999f) return max_positive_byte();
+            if (c <= -0.999f) return max_negative_byte();
+            return map_signed_to_uint8(c);
         };
-    };
+        out_x = write_comp(ux);
+        out_y = write_comp(uy);
+        return;
+    }
 
-    static_assert(sizeof(InReport) == 64, "PS4Dev::InReport debe medir 64 bytes");
+    // Remapear magnitud fuera de deadzone a [0..1]
+    float adj = (mag - deadzone_fraction) / (1.0f - deadzone_fraction);
+    adj = std::fmax(0.0f, std::fmin(1.0f, adj));
 
-    // -----------------------------
-    // Strings USB (copiados de GP2040-CE)
-    // -----------------------------
-    static const uint8_t STRING_LANGUAGE[]     = { 0x09, 0x04 };
-    static const uint8_t STRING_MANUFACTURER[] = "Open Stick Community";
-    static const uint8_t STRING_PRODUCT[]      = "GP2040-CE (PS4)";
-    static const uint8_t STRING_VERSION[]      = "1.0";
+    // Curve: potencia gamma sobre la magnitud
+    float out_frac = std::pow(adj, gamma);
 
-    static const uint8_t* const STRING_DESCRIPTORS[] =
+    // Aplicar sensibilidad y clamp
+    out_frac *= sensitivity;
+    out_frac = std::fmax(0.0f, std::fmin(1.0f, out_frac));
+
+    // Reconstruir componentes manteniendo dirección:
+    float scale = out_frac / mag; // mag>0
+    float sx = vx * scale;
+    float sy = vy * scale;
+
+    // Clamp just in case
+    sx = std::fmax(-1.0f, std::fmin(1.0f, sx));
+    sy = std::fmax(-1.0f, std::fmin(1.0f, sy));
+
+    out_x = map_signed_to_uint8(sx);
+    out_y = map_signed_to_uint8(sy);
+}
+
+void PS4Device::initialize()
+{
+    class_driver_ =
     {
-        STRING_LANGUAGE,
-        STRING_MANUFACTURER,
-        STRING_PRODUCT,
-        STRING_VERSION
+        .name             = TUD_DRV_NAME("PS4"),
+        .init             = hidd_init,
+        .deinit           = hidd_deinit,
+        .reset            = hidd_reset,
+        .open             = hidd_open,
+        .control_xfer_cb  = hidd_control_xfer_cb,
+        .xfer_cb          = hidd_xfer_cb,
+        .sof              = nullptr
     };
+}
 
-    // -----------------------------
-    // Device descriptor
-    //   VID/PID = 0x1532:0x0401 (Razer Panthera) – igual que GP2040-CE PS4
-    // -----------------------------
-    static const uint8_t DEVICE_DESCRIPTORS[] =
+void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
+{
+    (void)idx;
+
+    // ---- Estado de la macro MUTE (cuadrado + círculos) ----
+    static bool     mutePrev          = false;
+    static absolute_time_t muteEndTime; // time-based end
+    static bool     muteActive        = false;
+    static constexpr uint32_t MUTE_MACRO_DURATION_MS = 483;
+
+    // ---- Nueva macro PS -> R1 + L2 + Triangle (time-based) ----
+    static bool     psPrev            = false;
+    static absolute_time_t psEndTime; // time-based end for PS macro
+    static bool     psActive         = false;
+    static constexpr uint32_t PS_MACRO_DURATION_MS = 350; // 350 ms
+
+    Gamepad::PadIn gp_in = gamepad.get_pad_in();
+    const uint16_t btn   = gp_in.buttons;
+
+    const bool sharePressed = (btn & Gamepad::BUTTON_BACK)  != 0;  // SHARE
+    const bool mutePressed  = (btn & Gamepad::BUTTON_MISC)  != 0;  // usamos MISC como MUTE
+    const bool psPressed    = (btn & Gamepad::BUTTON_SYS)   != 0;  // PS button
+
+    // Flanco de subida de MUTE → arranca macro con tiempo absoluto (483 ms)
+    if (mutePressed && !mutePrev)
     {
-        0x12,       // bLength
-        0x01,       // bDescriptorType (Device)
-        0x00, 0x02, // bcdUSB 2.00
-        0x00,       // bDeviceClass
-        0x00,       // bDeviceSubClass
-        0x00,       // bDeviceProtocol
-        0x40,       // bMaxPacketSize0
-        0x32, 0x15, // idVendor  0x1532
-        0x01, 0x04, // idProduct 0x0401
-        0x00, 0x01, // bcdDevice 1.00
-        0x01,       // iManufacturer
-        0x02,       // iProduct
-        0x00,       // iSerialNumber
-        0x01        // bNumConfigurations
-    };
+        muteActive = true;
+        muteEndTime = make_timeout_time_ms(MUTE_MACRO_DURATION_MS);
+    }
+    mutePrev = mutePressed;
 
-    // -----------------------------
-    // HID report descriptor
-    //   Copiado de ps4_report_descriptor de GP2040-CE
-    // -----------------------------
-    static const uint8_t REPORT_DESCRIPTORS[] =
+    // Flanco de subida de PS → arranca macro PS (350 ms) -> time-based
+    if (psPressed && !psPrev)
     {
-        0x05, 0x01,        // Usage Page (Generic Desktop Ctrls)
-        0x09, 0x05,        // Usage (Game Pad)
-        0xA1, 0x01,        // Collection (Application)
-        0x85, 0x01,        //   Report ID (1)
-        0x09, 0x30,        //   Usage (X)
-        0x09, 0x31,        //   Usage (Y)
-        0x09, 0x32,        //   Usage (Z)
-        0x09, 0x35,        //   Usage (Rz)
-        0x15, 0x00,        //   Logical Minimum (0)
-        0x26, 0xFF, 0x00,  //   Logical Maximum (255)
-        0x75, 0x08,        //   Report Size (8)
-        0x95, 0x04,        //   Report Count (4)
-        0x81, 0x02,        //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
+        psActive = true;
+        psEndTime = make_timeout_time_ms(PS_MACRO_DURATION_MS);
+    }
+    psPrev = psPressed;
 
-        0x09, 0x39,        //   Usage (Hat switch)
-        0x15, 0x00,        //   Logical Minimum (0)
-        0x25, 0x07,        //   Logical Maximum (7)
-        0x35, 0x00,        //   Physical Minimum (0)
-        0x46, 0x3B, 0x01,  //   Physical Maximum (315)
-        0x65, 0x14,        //   Unit (System: English Rotation, Length: Centimeter)
-        0x75, 0x04,        //   Report Size (4)
-        0x95, 0x01,        //   Report Count (1)
-        0x81, 0x42,        //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,Null State)
-
-        0x65, 0x00,        //   Unit (None)
-        0x05, 0x09,        //   Usage Page (Button)
-        0x19, 0x01,        //   Usage Minimum (0x01)
-        0x29, 0x0E,        //   Usage Maximum (0x0E)
-        0x15, 0x00,        //   Logical Minimum (0)
-        0x25, 0x01,        //   Logical Maximum (1)
-        0x75, 0x01,        //   Report Size (1)
-        0x95, 0x0E,        //   Report Count (14)
-        0x81, 0x02,        //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
-
-        0x06, 0x00, 0xFF,  //   Usage Page (Vendor Defined 0xFF00)
-        0x09, 0x20,        //   Usage (0x20)
-        0x75, 0x06,        //   Report Size (6)
-        0x95, 0x01,        //   Report Count (1)
-        0x81, 0x02,        //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
-
-        0x05, 0x01,        //   Usage Page (Generic Desktop Ctrls)
-        0x09, 0x33,        //   Usage (Rx)
-        0x09, 0x34,        //   Usage (Ry)
-        0x15, 0x00,        //   Logical Minimum (0)
-        0x26, 0xFF, 0x00,  //   Logical Maximum (255)
-        0x75, 0x08,        //   Report Size (8)
-        0x95, 0x02,        //   Report Count (2)
-        0x81, 0x02,        //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
-
-        0x06, 0x00, 0xFF,  //   Usage Page (Vendor Defined 0xFF00)
-        0x09, 0x21,        //   Usage (0x21)
-        0x95, 0x36,        //   Report Count (54)
-        0x81, 0x02,        //   Input (Data,Var,Abs,No Wrap,Linear,Preferred State,No Null Position)
-
-        0x85, 0x05,        //   Report ID (5)
-        0x09, 0x22,        //   Usage (0x22)
-        0x95, 0x1F,        //   Report Count (31)
-        0x91, 0x02,        //   Output (...)
-
-        0x85, 0x03,        //   Report ID (3)
-        0x0A, 0x21, 0x27,  //   Usage (0x2721)
-        0x95, 0x2F,        //   Report Count (47)
-        0xB1, 0x02,        //   Feature (...)
-
-        0x85, 0x02,        //   Report ID (2)
-        0x09, 0x24,        //   Usage (0x24)
-        0x95, 0x24,        //   Report Count (36)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x08,        //   Report ID (8)
-        0x09, 0x25,        //   Usage (0x25)
-        0x95, 0x03,        //   Report Count (3)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x10,        //   Report ID (16)
-        0x09, 0x26,        //   Usage (0x26)
-        0x95, 0x04,        //   Report Count (4)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x11,        //   Report ID (17)
-        0x09, 0x27,        //   Usage (0x27)
-        0x95, 0x02,        //   Report Count (2)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x12,        //   Report ID (18)
-        0x06, 0x02, 0xFF,  //   Usage Page (Vendor Defined 0xFF02)
-        0x09, 0x21,        //   Usage (0x21)
-        0x95, 0x0F,        //   Report Count (15)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x13,        //   Report ID (19)
-        0x09, 0x22,        //   Usage (0x22)
-        0x95, 0x16,        //   Report Count (22)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x14,        //   Report ID (20)
-        0x06, 0x05, 0xFF,  //   Usage Page (Vendor Defined 0xFF05)
-        0x09, 0x20,        //   Usage (0x20)
-        0x95, 0x10,        //   Report Count (16)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x15,        //   Report ID (21)
-        0x09, 0x21,        //   Usage (0x21)
-        0x95, 0x2C,        //   Report Count (44)
-        0xB1, 0x02,        //   Feature
-        0x06, 0x80, 0xFF,  //   Usage Page (Vendor Defined 0xFF80)
-        0x85, 0x80,        //   Report ID (128)
-        0x09, 0x20,        //   Usage (0x20)
-        0x95, 0x06,        //   Report Count (6)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x81,        //   Report ID (129)
-        0x09, 0x21,        //   Usage (0x21)
-        0x95, 0x06,        //   Report Count (6)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x82,        //   Report ID (130)
-        0x09, 0x22,        //   Usage (0x22)
-        0x95, 0x05,        //   Report Count (5)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x83,        //   Report ID (131)
-        0x09, 0x23,        //   Usage (0x23)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x84,        //   Report ID (132)
-        0x09, 0x24,        //   Usage (0x24)
-        0x95, 0x04,        //   Report Count (4)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x85,        //   Report ID (133)
-        0x09, 0x25,        //   Usage (0x25)
-        0x95, 0x06,        //   Report Count (6)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x86,        //   Report ID (134)
-        0x09, 0x26,        //   Usage (0x26)
-        0x95, 0x06,        //   Report Count (6)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x87,        //   Report ID (135)
-        0x09, 0x27,        //   Usage (0x27)
-        0x95, 0x23,        //   Report Count (35)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x88,        //   Report ID (136)
-        0x09, 0x28,        //   Usage (0x28)
-        0x95, 0x22,        //   Report Count (34)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x89,        //   Report ID (137)
-        0x09, 0x29,        //   Usage (0x29)
-        0x95, 0x02,        //   Report Count (2)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x90,        //   Report ID (144)
-        0x09, 0x30,        //   Usage (0x30)
-        0x95, 0x05,        //   Report Count (5)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x91,        //   Report ID (145)
-        0x09, 0x31,        //   Usage (0x31)
-        0x95, 0x03,        //   Report Count (3)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x92,        //   Report ID (146)
-        0x09, 0x32,        //   Usage (0x32)
-        0x95, 0x03,        //   Report Count (3)
-        0xB1, 0x02,        //   Feature
-        0x85, 0x93,        //   Report ID (147)
-        0x09, 0x33,        //   Usage (0x33)
-        0x95, 0x0C,        //   Report Count (12)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA0,        //   Report ID (160)
-        0x09, 0x40,        //   Usage (0x40)
-        0x95, 0x06,        //   Report Count (6)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA1,        //   Report ID (161)
-        0x09, 0x41,        //   Usage (0x41)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA2,        //   Report ID (162)
-        0x09, 0x42,        //   Usage (0x42)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA3,        //   Report ID (163)
-        0x09, 0x43,        //   Usage (0x43)
-        0x95, 0x30,        //   Report Count (48)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA4,        //   Report ID (164)
-        0x09, 0x44,        //   Usage (0x44)
-        0x95, 0x0D,        //   Report Count (13)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA5,        //   Report ID (165)
-        0x09, 0x45,        //   Usage (0x45)
-        0x95, 0x15,        //   Report Count (21)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA6,        //   Report ID (166)
-        0x09, 0x46,        //   Usage (0x46)
-        0x95, 0x15,        //   Report Count (21)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA7,        //   Report ID (247)
-        0x09, 0x4A,        //   Usage (0x4A)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA8,        //   Report ID (250)
-        0x09, 0x4B,        //   Usage (0x4B)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xA9,        //   Report ID (251)
-        0x09, 0x4C,        //   Usage (0x4C)
-        0x95, 0x08,        //   Report Count (8)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xAA,        //   Report ID (252)
-        0x09, 0x4E,        //   Usage (0x4E)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xAB,        //   Report ID (253)
-        0x09, 0x4F,        //   Usage (0x4F)
-        0x95, 0x39,        //   Report Count (57)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xAC,        //   Report ID (254)
-        0x09, 0x50,        //   Usage (0x50)
-        0x95, 0x39,        //   Report Count (57)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xAD,        //   Report ID (255)
-        0x09, 0x51,        //   Usage (0x51)
-        0x95, 0x0B,        //   Report Count (11)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xAE,        //   Report ID (256)
-        0x09, 0x52,        //   Usage (0x52)
-        0x95, 0x01,        //   Report Count (1)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xAF,        //   Report ID (175)
-        0x09, 0x53,        //   Usage (0x53)
-        0x95, 0x02,        //   Report Count (2)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xB0,        //   Report ID (176)
-        0x09, 0x54,        //   Usage (0x54)
-        0x95, 0x3F,        //   Report Count (63)
-        0xB1, 0x02,        //   Feature
-        0xC0,              // End Collection
-
-        0x06, 0xF0, 0xFF,  // Usage Page (Vendor Defined 0xFFF0)
-        0x09, 0x40,        // Usage (0x40)
-        0xA1, 0x01,        // Collection (Application)
-        0x85, 0xF0,        //   Report ID (-16) AUTH F0
-        0x09, 0x47,        //   Usage (0x47)
-        0x95, 0x3F,        //   Report Count (63)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xF1,        //   Report ID (-15) AUTH F1
-        0x09, 0x48,        //   Usage (0x48)
-        0x95, 0x3F,        //   Report Count (63)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xF2,        //   Report ID (-14) AUTH F2
-        0x09, 0x49,        //   Usage (0x49)
-        0x95, 0x0F,        //   Report Count (15)
-        0xB1, 0x02,        //   Feature
-        0x85, 0xF3,        //   Report ID (-13) Auth F3 (Reset)
-        0x0A, 0x01, 0x47,  //   Usage (0x4701)
-        0x95, 0x07,        //   Report Count (7)
-        0xB1, 0x02,        //   Feature
-        0xC0,              // End Collection
-    };
-
-    // -----------------------------
-    // Descriptor de configuración
-    // -----------------------------
-    static const uint8_t CONFIGURATION_DESCRIPTORS[] =
+    // Actualizar estados por tiempo
+    if (muteActive && time_reached(muteEndTime))
     {
-        // Config
-        0x09,        // bLength
-        0x02,        // bDescriptorType (Configuration)
-        0x29, 0x00,  // wTotalLength 41
-        0x01,        // bNumInterfaces 1
-        0x01,        // bConfigurationValue
-        0x00,        // iConfiguration
-        0x80,        // bmAttributes (Bus powered)
-        0x32,        // bMaxPower (100mA)
+        muteActive = false;
+    }
+    if (psActive && time_reached(psEndTime))
+    {
+        psActive = false;
+    }
 
-        // Interface 0
-        0x09,        // bLength
-        0x04,        // bDescriptorType (Interface)
-        0x00,        // bInterfaceNumber 0
-        0x00,        // bAlternateSetting
-        0x02,        // bNumEndpoints 2
-        0x03,        // bInterfaceClass (HID)
-        0x00,        // bInterfaceSubClass
-        0x00,        // bInterfaceProtocol
-        0x00,        // iInterface
+    const bool macroActive = muteActive; // MUTE macro
+    const bool psMacroActive = psActive; // PS macro (time-based)
 
-        // HID descriptor
-        0x09,        // bLength
-        0x21,        // bDescriptorType (HID)
-        0x11, 0x01,  // bcdHID 1.11
-        0x00,        // bCountryCode
-        0x01,        // bNumDescriptors
-        0x22,        // bDescriptorType (Report)
-        sizeof(REPORT_DESCRIPTORS) & 0xFF,
-        (sizeof(REPORT_DESCRIPTORS) >> 8) & 0xFF,
+    // ----------------------------------------------------------------
+    // Construimos SIEMPRE el reporte desde cero
+    // ----------------------------------------------------------------
+    std::memset(&report_in_, 0, sizeof(report_in_));
 
-        // Endpoint IN (device -> host)
-        0x07,        // bLength
-        0x05,        // bDescriptorType (Endpoint)
-        0x81,        // bEndpointAddress (EP1 IN)
-        0x03,        // bmAttributes (Interrupt)
-        0x40, 0x00,  // wMaxPacketSize 64
-        0x01,        // bInterval 1ms
+    // Report ID 1 (coincide con 0x85,0x01 del descriptor HID)
+    report_in_.reportID = 0x01;
 
-        // Endpoint OUT (host -> device)
-        0x07,        // bLength
-        0x05,        // bDescriptorType (Endpoint)
-        0x02,        // bEndpointAddress (EP2 OUT)
-        0x03,        // bmAttributes (Interrupt)
-        0x40, 0x00,  // wMaxPacketSize 64
-        0x01,        // bInterval 1ms
-    };
+    // Touchpad: sin dedos para que no salga el punto azul fijo
+    report_in_.gamepad.touchpadActive = 0;
+    report_in_.gamepad.touchpadData.p1.unpressed = 1;
+    report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
-} // namespace PS4Dev
+    // ------------------ Sticks analógicos (0-255) con ajustes solicitados ---------------
+    // LEFT: "Ancho" -> gamma = 1.8
+    // RIGHT: "Relajado" -> gamma = 1.3
+    constexpr float left_deadzone   = 0.03f;  // 3% (radial)
+    constexpr float right_deadzone  = 0.02f;  // 2% (radial)
+    constexpr float left_gamma      = 1.8f;   // "Ancho"
+    constexpr float right_gamma     = 1.3f;   // "Relajado"
+    constexpr float both_sensitivity = 1.0f;  // 1.0 para que lleguen al 100% si mag==1
 
-#endif // _PS4_DEVICE_DESCRIPTORS_H_
+    apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
+                             left_deadzone, left_gamma, both_sensitivity,
+                             report_in_.leftStickX, report_in_.leftStickY);
+
+    apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
+                             right_deadzone, right_gamma, both_sensitivity,
+                             report_in_.rightStickX, report_in_.rightStickY);
+
+    // ------------------ D-Pad → HAT ------------------
+    switch (gp_in.dpad)
+    {
+        case Gamepad::DPAD_UP:          report_in_.dpad = PS4Dev::HAT_UP;         break;
+        case Gamepad::DPAD_UP_RIGHT:    report_in_.dpad = PS4Dev::HAT_UP_RIGHT;   break;
+        case Gamepad::DPAD_RIGHT:       report_in_.dpad = PS4Dev::HAT_RIGHT;      break;
+        case Gamepad::DPAD_DOWN_RIGHT:  report_in_.dpad = PS4Dev::HAT_DOWN_RIGHT; break;
+        case Gamepad::DPAD_DOWN:        report_in_.dpad = PS4Dev::HAT_DOWN;       break;
+        case Gamepad::DPAD_DOWN_LEFT:   report_in_.dpad = PS4Dev::HAT_DOWN_LEFT;  break;
+        case Gamepad::DPAD_LEFT:        report_in_.dpad = PS4Dev::HAT_LEFT;       break;
+        case Gamepad::DPAD_UP_LEFT:     report_in_.dpad = PS4Dev::HAT_UP_LEFT;    break;
+        default:                        report_in_.dpad = PS4Dev::HAT_CENTER;     break;
+    }
+
+    // ------------------ Face buttons + MACRO ------------------
+    const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;  // Square
+    const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;  // Circle
+
+    const bool squareFinal = baseSquare || macroActive;
+    const bool circleFinal = baseCircle || macroActive;
+
+    report_in_.buttonWest  = squareFinal ? 1 : 0;               // Square
+    report_in_.buttonEast  = circleFinal ? 1 : 0;               // Circle
+    report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross (X)
+    report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0; // Triangle
+
+    // ------------------ Hombros / Triggers (REMAPPING) ------------------
+    const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0; // L1 físico
+    const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0; // R1 físico
+    const bool physL2 = gp_in.trigger_l;                 // L2 físico (digital)
+    const bool physR2 = gp_in.trigger_r;                 // R2 físico (digital)
+
+    bool   virtL1 = physL1;
+    bool   virtR1 = false;
+    bool   virtL2 = false;
+    bool   virtR2 = false;
+    uint8_t trigL = 0;
+    uint8_t trigR = 0;
+
+    if (physR1)
+    {
+        virtR2 = true;
+        trigR  = 0xFF;
+    }
+
+    if (physR2)
+    {
+        virtL2 = true;
+        trigL  = 0xFF;
+    }
+
+    if (physL2)
+    {
+        virtR1 = true;
+    }
+
+    report_in_.buttonL1 = virtL1 ? 1 : 0;
+    report_in_.buttonR1 = virtR1 ? 1 : 0;
+    report_in_.buttonL2 = virtL2 ? 1 : 0;
+    report_in_.buttonR2 = virtR2 ? 1 : 0;
+
+    report_in_.leftTrigger  = trigL;
+    report_in_.rightTrigger = trigR;
+
+    // ------------------ Sobrescribir por la macro PS (si está activa) --------------
+    if (psMacroActive)
+    {
+        report_in_.buttonR1 = 1; // R1
+        report_in_.buttonL2 = 1; // L2
+        report_in_.buttonNorth = 1; // Triangle
+        report_in_.leftTrigger  = 0xFF; // fuerza eje L2 al máximo
+    }
+
+    // ------------------ Sticks pulsados ------------------
+    report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
+    report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
+
+    // ------------------ Centrales ------------------
+    report_in_.buttonSelect = sharePressed ? 1 : 0;
+    report_in_.buttonStart  = (btn & Gamepad::BUTTON_START) ? 1 : 0;
+    report_in_.buttonHome   = psPressed ? 1 : 0;
+    report_in_.buttonTouchpad = sharePressed ? 1 : 0;
+
+    // ----------------------------------------------------------------
+    // Enviar el reporte HID
+    // ----------------------------------------------------------------
+    if (tud_suspended())
+    {
+        tud_remote_wakeup();
+    }
+
+    if (tud_hid_ready())
+    {
+        tud_hid_report(
+            0, // TinyUSB no añade ID; el buffer ya empieza en reportID = 1
+            reinterpret_cast<uint8_t*>(&report_in_),
+            sizeof(PS4Dev::InReport)
+        );
+    }
+}
+
+uint16_t PS4Device::get_report_cb(uint8_t itf, uint8_t report_id,
+                                  hid_report_type_t report_type,
+                                  uint8_t *buffer, uint16_t reqlen)
+{
+    (void)itf;
+    (void)report_id;
+
+    if (report_type == HID_REPORT_TYPE_INPUT)
+    {
+        uint16_t len = std::min<uint16_t>(reqlen, sizeof(PS4Dev::InReport));
+        std::memcpy(buffer, &report_in_, len);
+        return len;
+    }
+
+    return 0;
+}
+
+void PS4Device::set_report_cb(uint8_t itf, uint8_t report_id,
+                              hid_report_type_t report_type,
+                              uint8_t const *buffer, uint16_t bufsize)
+{
+    (void)itf;
+    (void)report_id;
+    (void)report_type;
+    (void)buffer;
+    (void)bufsize;
+    // De momento ignoramos salida (sin rumble / leds)
+}
+
+bool PS4Device::vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+                                       tusb_control_request_t const *request)
+{
+    (void)rhport;
+    (void)stage;
+    (void)request;
+    return false;
+}
+
+const uint16_t* PS4Device::get_descriptor_string_cb(uint8_t index, uint16_t langid)
+{
+    (void)langid;
+
+    const char* value =
+        reinterpret_cast<const char*>(PS4Dev::STRING_DESCRIPTORS[index]);
+    return get_string_descriptor(value, index);
+}
+
+const uint8_t* PS4Device::get_descriptor_device_cb()
+{
+    return PS4Dev::DEVICE_DESCRIPTORS;
+}
+
+const uint8_t* PS4Device::get_hid_descriptor_report_cb(uint8_t itf)
+{
+    (void)itf;
+    return PS4Dev::REPORT_DESCRIPTORS;
+}
+
+const uint8_t* PS4Device::get_descriptor_configuration_cb(uint8_t index)
+{
+    (void)index;
+    return PS4Dev::CONFIGURATION_DESCRIPTORS;
+}
+
+const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
+{
+    return nullptr;
+}
