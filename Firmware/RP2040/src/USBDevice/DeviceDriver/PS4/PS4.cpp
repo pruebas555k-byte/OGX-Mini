@@ -114,16 +114,16 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
                                             uint8_t &out_x, uint8_t &out_y)
 {
     constexpr float INT16_MAX_F = 32767.0f;
-    // Umbral para snap más permisivo (ajustable); también aplicamos axis-snap.
-    constexpr float SNAP_TO_EDGE_THRESHOLD = 0.98f;
-    constexpr float AXIS_SNAP_MIN_OTHER_AXIS = 0.05f; // si el otro eje está por debajo de esto
-    constexpr float AXIS_SNAP_MAIN_AXIS = 0.95f;      // y el eje principal >= esto -> snap
-
+    
+    // [MODIFICADO] Umbral más permisivo. 
+    // Si la magnitud física llega al 92% (0.92), forzamos la salida al 100% (borde del círculo).
+    // Antes estaba en 0.98f, que era muy estricto.
+    constexpr float SNAP_TO_EDGE_THRESHOLD = 0.92f; 
+    
     float vx = static_cast<float>(in_x) / INT16_MAX_F; // [-1..1]
     float vy = static_cast<float>(in_y) / INT16_MAX_F; // [-1..1]
 
     float mag = std::sqrt(vx*vx + vy*vy);
-
     if (mag <= deadzone_fraction || mag == 0.0f)
     {
         out_x = 128;
@@ -131,29 +131,16 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
         return;
     }
 
+    // Clamp mag por si valores raw > 1 debido a -32768 etc.
     if (mag > 1.0f) mag = 1.0f;
 
-    // AXIS SNAP: si un eje está casi 0 y el otro está cerca del tope, forzamos ese eje a ±1 exacto.
-    if (std::fabs(vx) <= AXIS_SNAP_MIN_OTHER_AXIS && std::fabs(vy) >= AXIS_SNAP_MAIN_AXIS)
-    {
-        float sy = (vy < 0.0f) ? -1.0f : 1.0f;
-        out_x = map_signed_to_uint8(0.0f);
-        out_y = map_signed_to_uint8(sy);
-        return;
-    }
-    if (std::fabs(vy) <= AXIS_SNAP_MIN_OTHER_AXIS && std::fabs(vx) >= AXIS_SNAP_MAIN_AXIS)
-    {
-        float sx = (vx < 0.0f) ? -1.0f : 1.0f;
-        out_x = map_signed_to_uint8(sx);
-        out_y = map_signed_to_uint8(0.0f);
-        return;
-    }
-
-    // Magnitude snap: si estamos muy cerca del borde, forzamos vector unitario
+    // Si estamos muy cerca del borde físico (>= 92%), forzamos magnitud 1.0 manteniendo dirección
     if (mag >= SNAP_TO_EDGE_THRESHOLD)
     {
+        // unit vector (dirección)
         float ux = vx / mag;
         float uy = vy / mag;
+        // mapeamos la dirección a 100% (manteniendo diagonalidad)
         out_x = map_signed_to_uint8(ux);
         out_y = map_signed_to_uint8(uy);
         return;
@@ -168,16 +155,19 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
 
     // Aplicar sensibilidad y clamp
     out_frac *= sensitivity;
-    out_frac = std::fmax(0.0f, std::fmin(1.0f, out_frac));
+    if (out_frac > 1.0f) out_frac = 1.0f;
+    if (out_frac < 0.0f) out_frac = 0.0f;
 
     // Reconstruir componentes manteniendo dirección:
-    float scale = out_frac / mag;
+    float scale = out_frac / mag; // mag>0
     float sx = vx * scale;
     float sy = vy * scale;
 
     // Clamp just in case
-    sx = std::fmax(-1.0f, std::fmin(1.0f, sx));
-    sy = std::fmax(-1.0f, std::fmin(1.0f, sy));
+    if (sx >  1.0f) sx =  1.0f;
+    if (sx < -1.0f) sx = -1.0f;
+    if (sy >  1.0f) sy =  1.0f;
+    if (sy < -1.0f) sy = -1.0f;
 
     out_x = map_signed_to_uint8(sx);
     out_y = map_signed_to_uint8(sy);
@@ -206,6 +196,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     static bool     mutePrev          = false;
     static absolute_time_t muteEndTime; // time-based end
     static bool     muteActive        = false;
+    // Duración exacta solicitada para la macro (ms)
     static constexpr uint32_t MUTE_MACRO_DURATION_MS = 483;
 
     // ---- Nueva macro PS -> R1 + L2 + Triangle (time-based) ----
@@ -264,14 +255,17 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
     // ------------------ Sticks analógicos (0-255) con ajustes solicitados ---------------
-    // LEFT: "Ancho" -> gamma = 1.8
-    // RIGHT: "Relajado" -> gamma = 1.3
+    // Usamos mapeo RADIAL (deadzone + gamma sobre la magnitud) para preservar diagonal.
     constexpr float left_deadzone   = 0.03f;  // 3% (radial)
     constexpr float right_deadzone  = 0.02f;  // 2% (radial)
     constexpr float left_gamma      = 1.8f;   // "Ancho"
     constexpr float right_gamma     = 1.3f;   // "Relajado"
-    constexpr float both_sensitivity = 1.0f;  // 1.0 para que lleguen al 100% si mag==1
+    
+    // [MODIFICADO] Sensibilidad al 105%. Esto multiplica el resultado final antes del clamp.
+    // Ayuda a asegurar que llegues al 100% de salida.
+    constexpr float both_sensitivity = 1.05f;  
 
+    // Aplicar mapeo radial para preservar dirección y asegurar 100% en extremos
     apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
                              left_deadzone, left_gamma, both_sensitivity,
                              report_in_.leftStickX, report_in_.leftStickY);
@@ -301,6 +295,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     const bool squareFinal = baseSquare || macroActive;
     const bool circleFinal = baseCircle || macroActive;
 
+    // NO remapeos que muevan el stick izquierdo al pulsar Square
     report_in_.buttonWest  = squareFinal ? 1 : 0;               // Square
     report_in_.buttonEast  = circleFinal ? 1 : 0;               // Circle
     report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross (X)
@@ -381,4 +376,71 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     }
 }
 
-// ... (rest of callbacks unchanged) ...
+uint16_t PS4Device::get_report_cb(uint8_t itf, uint8_t report_id,
+                                  hid_report_type_t report_type,
+                                  uint8_t *buffer, uint16_t reqlen)
+{
+    (void)itf;
+    (void)report_id;
+
+    if (report_type == HID_REPORT_TYPE_INPUT)
+    {
+        uint16_t len = std::min<uint16_t>(reqlen, sizeof(PS4Dev::InReport));
+        std::memcpy(buffer, &report_in_, len);
+        return len;
+    }
+
+    return 0;
+}
+
+void PS4Device::set_report_cb(uint8_t itf, uint8_t report_id,
+                              hid_report_type_t report_type,
+                              uint8_t const *buffer, uint16_t bufsize)
+{
+    (void)itf;
+    (void)report_id;
+    (void)report_type;
+    (void)buffer;
+    (void)bufsize;
+    // De momento ignoramos salida (sin rumble / leds)
+}
+
+bool PS4Device::vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+                                       tusb_control_request_t const *request)
+{
+    (void)rhport;
+    (void)stage;
+    (void)request;
+    return false;
+}
+
+const uint16_t* PS4Device::get_descriptor_string_cb(uint8_t index, uint16_t langid)
+{
+    (void)langid;
+
+    const char* value =
+        reinterpret_cast<const char*>(PS4Dev::STRING_DESCRIPTORS[index]);
+    return get_string_descriptor(value, index);
+}
+
+const uint8_t* PS4Device::get_descriptor_device_cb()
+{
+    return PS4Dev::DEVICE_DESCRIPTORS;
+}
+
+const uint8_t* PS4Device::get_hid_descriptor_report_cb(uint8_t itf)
+{
+    (void)itf;
+    return PS4Dev::REPORT_DESCRIPTORS;
+}
+
+const uint8_t* PS4Device::get_descriptor_configuration_cb(uint8_t index)
+{
+    (void)index;
+    return PS4Dev::CONFIGURATION_DESCRIPTORS;
+}
+
+const uint8_t* PS4Device::get_descriptor_device_qualifier_cb()
+{
+    return nullptr;
+}
