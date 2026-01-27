@@ -2,7 +2,7 @@
 #include "USBDevice/DeviceDriver/XInput/tud_xinput/tud_xinput.h"
 #include "USBDevice/DeviceDriver/XInput/XInput.h"
 
-// Variable estática para el contador del Turbo (si no quieres declararla en el .h)
+// Variable estática para el contador del Turbo
 static uint32_t turbo_tick = 0;
 
 void XInputDevice::initialize() 
@@ -36,22 +36,22 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // --- 2. REMAPEO SOLICITADO ---
         
-        // SELECT cambia a L1 (LB en XInput)
+        // SELECT (BACK) ahora activa L1 (LB en XInput)
         if (gp_in.buttons & Gamepad::BUTTON_BACK)  in_report_.buttons[1] |= XInput::Buttons1::LB;
         
-        // MUTE cambia a SELECT (BACK en XInput)
-        if (gp_in.buttons & Gamepad::BUTTON_MUTE)  in_report_.buttons[0] |= XInput::Buttons0::BACK;
+        // El botón SYSTEM/HOME (en lugar de MUTE) ahora activa SELECT (BACK en XInput)
+        if (gp_in.buttons & Gamepad::BUTTON_SYS)   in_report_.buttons[0] |= XInput::Buttons0::BACK;
 
-        // --- 3. MACRO TURBO L1 -> EQUIS (A en XInput) ---
+        // --- 3. MACRO TURBO L1 (LB) -> EQUIS (A en XInput) ---
+        // Al presionar el botón físico L1 (LB), se activa el turbo de A
         if (gp_in.buttons & Gamepad::BUTTON_LB) 
         {
             turbo_tick++;
-            // El valor '10' controla la velocidad. Menos es más rápido.
             if ((turbo_tick / 10) % 2 == 0) {
                 in_report_.buttons[1] |= XInput::Buttons1::A; 
             }
         } else {
-            turbo_tick = 0; // Reiniciar cuando se suelta
+            turbo_tick = 0; 
         }
 
         // --- 4. OTROS BOTONES ---
@@ -64,7 +64,8 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         if (gp_in.buttons & Gamepad::BUTTON_Y)     in_report_.buttons[1] |= XInput::Buttons1::Y;
         if (gp_in.buttons & Gamepad::BUTTON_B)     in_report_.buttons[1] |= XInput::Buttons1::B;
         if (gp_in.buttons & Gamepad::BUTTON_RB)    in_report_.buttons[1] |= XInput::Buttons1::RB;
-        if (gp_in.buttons & Gamepad::BUTTON_SYS)   in_report_.buttons[1] |= XInput::Buttons1::HOME;
+        // El botón HOME físico ya lo usamos para SELECT arriba, si quieres que también haga HOME:
+        // if (gp_in.buttons & Gamepad::BUTTON_SYS)  in_report_.buttons[1] |= XInput::Buttons1::HOME;
 
         // --- 5. GATILLOS Y STICKS CON ANTI-RECOIL ---
         in_report_.trigger_l = gp_in.trigger_l;
@@ -76,24 +77,22 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         
         int16_t ry = Range::invert(gp_in.joystick_ry);
 
-        // ANTI-RECOIL: Solo si L2 y R2 están presionados (ajusta el valor 100 si es muy sensible)
+        // ANTI-RECOIL: Al pulsar L2 + R2
         if (gp_in.trigger_l > 100 && gp_in.trigger_r > 100) 
         {
-            // Compensación: Sumamos para bajar la mira (ajusta 600 según el retroceso del arma)
-            int32_t compensation = 600;
+            int32_t compensation = 600; // Ajusta este valor si la mira baja mucho o poco
             if ((int32_t)ry + compensation > 32767) ry = 32767;
-            else ry += compensation;
+            else ry += (int16_t)compensation;
         }
-        in_report_.in_report_.joystick_ry = ry;
+        in_report_.joystick_ry = ry;
 
-        // Wakeup y envío
+        // Envío
         if (tud_suspended()) {
             tud_remote_wakeup();
         }
         tud_xinput::send_report((uint8_t*)&in_report_, sizeof(XInput::InReport));
     }
 
-    // --- 6. RUMBLE / FEEDBACK ---
     if (tud_xinput::receive_report(reinterpret_cast<uint8_t*>(&out_report_), sizeof(XInput::OutReport)) &&
         out_report_.report_id == XInput::OutReportID::RUMBLE)
     {
@@ -104,7 +103,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     }
 }
 
-// Callbacks requeridos (Sin cambios significativos)
+// Resto de funciones (get_report_cb, etc.) se mantienen igual que en tu original
 uint16_t XInputDevice::get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) 
 {
     std::memcpy(buffer, &in_report_, sizeof(XInput::InReport));
