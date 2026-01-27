@@ -331,16 +331,13 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
 
         // =========================================================
-        // 9. ANÁLOGOS: aplicar mapeo RADIAL Steam-style antes de remitirse
-        //    LEFT: "Ancho"  -> gamma = 1.8 (más resolución cerca del centro)
-        //    RIGHT: "Relajado" -> gamma = 1.7 (más despacio, control pro)
-        //    Ambos usan sensitivity = 0.8 para más control fino.
+        // 9. ANALOG STICKS: MENOS SENSIBLE SIEMPRE, LINEAL
         // =========================================================
         constexpr float left_deadzone   = 0.005f;  // 0.5%
         constexpr float right_deadzone  = 0.005f;  // 0.5%
-        constexpr float left_gamma      = 1.8f;    // movimiento
-        constexpr float right_gamma     = 1.7f;    // apuntado preciso
-        constexpr float both_sensitivity = 0.8f;   // menos sensible
+        constexpr float left_gamma      = 1.0f;    // lineal, sin curva
+        constexpr float right_gamma     = 1.0f;    // lineal, sin curva
+        constexpr float both_sensitivity = 0.8f;   // menos sensible SIEMPRE
 
         int16_t mapped_lx = 0;
         int16_t mapped_ly = 0;
