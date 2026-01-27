@@ -85,17 +85,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
     // ---------- ESTADO ESTÁTICO PARA MACROS / TIEMPOS ----------
     static absolute_time_t shot_start_time;
     static bool            is_shooting = false;
-
-    // Macro L1 (spam jump)
     static bool            jump_macro_active = false;
     static absolute_time_t jump_end_time;
     static uint64_t        last_tap_time = 0;
     static bool            tap_state    = false;
-
-    // Auto-detección del bit del TOUCHPAD
     static uint16_t        touchpadMask = 0;
-
-    // Estado para AIM ASSIST (para que sea más lento/suave)
     static uint64_t        aim_last_time_ms = 0;
     static int16_t         aim_jitter_x = 0;
     static int16_t         aim_jitter_y = 0;
@@ -168,19 +162,11 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // =========================================================
         // 3. STICKY AIM (JITTER EN STICK IZQUIERDO SOLO CON R2)
-        //    Más FUERTE pero MÁS LENTO:
-        //      - jitter ~20% del rango
-        //      - se actualiza cada ~35 ms
-        //    Ahora limitamos el efecto al 95% del rango para que no
-        //    mueva la cámara hasta el máximo absoluto y evite giros
-        //    extremos. Además usamos aritmética en 32 bits para evitar
-        //    wrap-around al sumar.
         // =========================================================
         if (final_trig_r)   // solo cuando disparas con R2
         {
             uint64_t now_ms = to_ms_since_boot(get_absolute_time());
 
-            // Cambiamos el vector de jitter solo cada 35 ms aprox.
             if (now_ms - aim_last_time_ms > 35)
             {
                 aim_last_time_ms = now_ms;
@@ -189,17 +175,14 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 int32_t ax = (rand() % (2 * JITTER + 1)) - JITTER;
                 int32_t ay = (rand() % (2 * JITTER + 1)) - JITTER;
 
-                // Escalamos el efecto máximo al 95% para seguridad
                 constexpr int SCALE_PCT = 95;
                 ax = (ax * SCALE_PCT) / 100;
                 ay = (ay * SCALE_PCT) / 100;
 
-                // Guardamos como int16_t (ya dentro de rango seguro)
                 aim_jitter_x = static_cast<int16_t>(ax);
                 aim_jitter_y = static_cast<int16_t>(ay);
             }
 
-            // Operación en 32 bits para evitar overflow antes del clamp
             int32_t new_lx = static_cast<int32_t>(out_lx) + static_cast<int32_t>(aim_jitter_x);
             int32_t new_ly = static_cast<int32_t>(out_ly) + static_cast<int32_t>(aim_jitter_y);
 
@@ -208,18 +191,12 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         }
         else
         {
-            // Sin disparar, no queremos jitter
             aim_jitter_x = 0;
             aim_jitter_y = 0;
         }
 
         // =========================================================
         // 4. ANTI-RECOIL DINÁMICO (EJE Y DERECHO, CUANDO R2)
-        //
-        //   - Primer segundo: fuerte
-        //   - Luego: más suave
-        //   RESTAMOS para que baje la mira.
-        //   Operamos en 32 bits y limitamos el recoil al 95%.
         // =========================================================
         if (final_trig_r)
         {
@@ -234,19 +211,15 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                 get_absolute_time()
             );
 
-            // Fuerzas fuertes para que se note bien
             const int32_t RECOIL_STRONG = 4000; // primer segundo
             const int32_t RECOIL_WEAK   = 3600; // después
-
             int32_t recoil_force = (time_shooting_us < 1000000)
                                  ? RECOIL_STRONG
                                  : RECOIL_WEAK;
 
-            // Escalamos el recoil al 95% máximo
             constexpr int SCALE_PCT = 99;
             recoil_force = (recoil_force * SCALE_PCT) / 100;
 
-            // Hacemos la resta en 32 bits para evitar wrap-around
             int32_t new_ry = static_cast<int32_t>(out_ry) - recoil_force;
             out_ry = clamp_to_int16(new_ry);
         }
@@ -291,47 +264,28 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 6. BOTONES BÁSICOS + REMAPS
         // =========================================================
-        // L1 físico: SOLO macro (abajo), NO manda LB normal aquí
-
-        // R1 normal
         if (btn & Gamepad::BUTTON_RB)    in_report_.buttons[1] |= XInput::Buttons1::RB;
-
-        // A/B/X/Y
         if (btn & Gamepad::BUTTON_X)     in_report_.buttons[1] |= XInput::Buttons1::X;
         if (btn & Gamepad::BUTTON_A)     in_report_.buttons[1] |= XInput::Buttons1::A;
         if (btn & Gamepad::BUTTON_Y)     in_report_.buttons[1] |= XInput::Buttons1::Y;
         if (btn & Gamepad::BUTTON_B)     in_report_.buttons[1] |= XInput::Buttons1::B;
-
-        // Sticks pulsados
         if (btn & Gamepad::BUTTON_L3)    in_report_.buttons[0] |= XInput::Buttons0::L3;
         if (btn & Gamepad::BUTTON_R3)    in_report_.buttons[0] |= XInput::Buttons0::R3;
-
-        // START
         if (btn & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
-
-        // --- BOTÓN PLAYSTATION (SYS) ---
-        // HOME + D-Pad Izq + Der
         if (btn & Gamepad::BUTTON_SYS)
         {
             in_report_.buttons[1] |= XInput::Buttons1::HOME;
             in_report_.buttons[0] |= (XInput::Buttons0::DPAD_LEFT |
                                       XInput::Buttons0::DPAD_RIGHT);
         }
-
-        // --- REMAP: SELECT → LB (L1 virtual) ---
         if (btn & Gamepad::BUTTON_BACK)
         {
             in_report_.buttons[1] |= XInput::Buttons1::LB;
-            // No ponemos Buttons0::BACK aquí
         }
-
-        // --- TOUCHPAD DETECTADO → BACK/SELECT ---
         if (touchpadMask && (btn & touchpadMask))
         {
             in_report_.buttons[0] |= XInput::Buttons0::BACK;
         }
-
-        // --- MUTE (BUTTON_MISC) actuará ahora como TOUCHPAD (BACK) ---
         if (btn & Gamepad::BUTTON_MISC)
         {
             in_report_.buttons[0] |= XInput::Buttons0::BACK;
@@ -358,7 +312,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         {
             uint64_t now = to_ms_since_boot(get_absolute_time());
 
-            // Velocidad del spam (50 ms ≈ 20 pulsos/seg)
             if (now - last_tap_time > 50)
             {
                 tap_state     = !tap_state;
@@ -380,14 +333,14 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 9. ANÁLOGOS: aplicar mapeo RADIAL Steam-style antes de remitirse
         //    LEFT: "Ancho"  -> gamma = 1.8 (más resolución cerca del centro)
-        //    RIGHT: "Relajado" -> gamma = 1.3 (ligeramente menos sensible que lineal)
-        //    Ambos usan sensitivity = 1.0 para alcanzar 100% en extremos.
+        //    RIGHT: "Relajado" -> gamma = 1.7 (más despacio, control pro)
+        //    Ambos usan sensitivity = 0.8 para más control fino.
         // =========================================================
-        constexpr float left_deadzone   = 0.03f;  // 3% radial
-        constexpr float right_deadzone  = 0.02f;  // 2% radial
-        constexpr float left_gamma      = 1.8f;   // ancho
-        constexpr float right_gamma     = 1.3f;   // relajado
-        constexpr float both_sensitivity = 1.0f;  // llegan al 100% si el stick lo alcanza
+        constexpr float left_deadzone   = 0.005f;  // 0.5%
+        constexpr float right_deadzone  = 0.005f;  // 0.5%
+        constexpr float left_gamma      = 1.8f;    // movimiento
+        constexpr float right_gamma     = 1.7f;    // apuntado preciso
+        constexpr float both_sensitivity = 0.8f;   // menos sensible
 
         int16_t mapped_lx = 0;
         int16_t mapped_ly = 0;
@@ -402,7 +355,6 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
                                        right_deadzone, right_gamma, both_sensitivity,
                                        mapped_rx, mapped_ry);
 
-        // Reemplazamos out_* por los mapeados para seguir con la lógica existente
         out_lx = mapped_lx;
         out_ly = mapped_ly;
         out_rx = mapped_rx;
@@ -411,24 +363,22 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // =========================================================
         // 10. ASIGNAR TRIGGERS Y STICKS FINALES
         //     Antes de escribir los ejes finales, limitamos todos
-        //     los ejes para que no superen el 95% del rango absoluto.
-        //     Usamos int32_t intermedio para evitar cualquier overflow.
+        //     los ejes para que no superen el 97% del rango absoluto.
         // =========================================================
         in_report_.trigger_l   = final_trig_l;
         in_report_.trigger_r   = final_trig_r;
 
-        // Limitar ejes al 95% del máximo para evitar giros extremos
-        constexpr int32_t LIM95 = (static_cast<int32_t>(INT16_MAX) * 97) / 100; // ≈ 31128
-        auto clamp95_to_int16 = [LIM95](int32_t v) -> int16_t {
-            if (v < -LIM95) return static_cast<int16_t>(-LIM95);
-            if (v >  LIM95) return static_cast<int16_t>( LIM95);
+        constexpr int32_t LIM97 = (static_cast<int32_t>(INT16_MAX) * 97) / 100;
+        auto clamp97_to_int16 = [LIM97](int32_t v) -> int16_t {
+            if (v < -LIM97) return static_cast<int16_t>(-LIM97);
+            if (v >  LIM97) return static_cast<int16_t>( LIM97);
             return static_cast<int16_t>(v);
         };
 
-        in_report_.joystick_lx = clamp95_to_int16(static_cast<int32_t>(out_lx));
-        in_report_.joystick_ly = clamp95_to_int16(static_cast<int32_t>(out_ly));
-        in_report_.joystick_rx = clamp95_to_int16(static_cast<int32_t>(out_rx));
-        in_report_.joystick_ry = clamp95_to_int16(static_cast<int32_t>(out_ry));
+        in_report_.joystick_lx = clamp97_to_int16(static_cast<int32_t>(out_lx));
+        in_report_.joystick_ly = clamp97_to_int16(static_cast<int32_t>(out_ly));
+        in_report_.joystick_rx = clamp97_to_int16(static_cast<int32_t>(out_rx));
+        in_report_.joystick_ry = clamp97_to_int16(static_cast<int32_t>(out_ry));
 
         // =========================================================
         // 11. ENVIAR REPORTE XINPUT
