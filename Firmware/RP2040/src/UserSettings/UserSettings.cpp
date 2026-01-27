@@ -22,8 +22,7 @@ namespace ButtonCombo {
     static constexpr uint32_t XBOXOG_SB = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_RB, Gamepad::DPAD_RIGHT);
     static constexpr uint32_t XBOXOG_XR = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB, Gamepad::DPAD_RIGHT);
     static constexpr uint32_t PSCLASSIC = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_A);
-    static constexpr uint32_t WEBAPP    = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB | Gamepad::BUTTON_RB);
-
+    static constexpr uint32_t WEBAPP = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_LB, Gamepad::DPAD_UP);
     // NUEVO: Combo para PS4 (START + Y, sin dpad)
     static constexpr uint32_t PS4       = BUTTON_COMBO(Gamepad::BUTTON_START | Gamepad::BUTTON_Y);
 };
