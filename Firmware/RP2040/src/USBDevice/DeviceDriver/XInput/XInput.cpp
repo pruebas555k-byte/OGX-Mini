@@ -2,16 +2,8 @@
 #include "USBDevice/DeviceDriver/XInput/tud_xinput/tud_xinput.h"
 #include "USBDevice/DeviceDriver/XInput/XInput.h"
 
+// Contador para la ráfaga del Turbo
 static uint32_t turbo_tick = 0;
-
-// Función auxiliar para convertir el análogo en digital (0% -> 100%)
-// Umbral del 5% aprox: 1638 de 32767
-int16_t apply_snap_threshold(int16_t value) {
-    const int16_t threshold = 1638; 
-    if (value > threshold) return 32767;
-    if (value < -threshold) return -32768;
-    return 0;
-}
 
 void XInputDevice::initialize() 
 {
@@ -27,7 +19,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         Gamepad::PadIn gp_in = gamepad.get_pad_in();
 
-        // --- 1. DPAD ---
+        // --- 1. DPAD (Cruceta) ---
         switch (gp_in.dpad)
         {
             case Gamepad::DPAD_UP:         in_report_.buttons[0] = XInput::Buttons0::DPAD_UP; break;
@@ -41,22 +33,29 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
             default: break;
         }
 
-        // --- 2. REMAPEO ---
+        // --- 2. REMAPEO DE BOTONES ---
+        // Físico SELECT (BACK) -> Envía L1 (LB)
         if (gp_in.buttons & Gamepad::BUTTON_BACK)  in_report_.buttons[1] |= XInput::Buttons1::LB;
+        
+        // Físico MUTE (MISC) -> Envía SELECT (BACK)
         if (gp_in.buttons & Gamepad::BUTTON_MISC)  in_report_.buttons[0] |= XInput::Buttons0::BACK;
 
-        // --- 3. TURBO L1 -> A ---
-        if (gp_in.buttons & Gamepad::BUTTON_LB) {
+        // --- 3. MACRO TURBO: L1 (LB) -> EQUIS (A de XInput) ---
+        if (gp_in.buttons & Gamepad::BUTTON_LB) 
+        {
             turbo_tick++;
-            if ((turbo_tick / 5) % 2 == 0) in_report_.buttons[1] |= XInput::Buttons1::A;
+            if ((turbo_tick / 5) % 2 == 0) {
+                in_report_.buttons[1] |= XInput::Buttons1::A; 
+            }
         } else {
-            turbo_tick = 0;
+            turbo_tick = 0; 
         }
 
-        // --- 4. BOTONES ---
+        // --- 4. ASIGNACIÓN DE BOTONES RESTANTES ---
         if (gp_in.buttons & Gamepad::BUTTON_START) in_report_.buttons[0] |= XInput::Buttons0::START;
         if (gp_in.buttons & Gamepad::BUTTON_L3)    in_report_.buttons[0] |= XInput::Buttons0::L3;
         if (gp_in.buttons & Gamepad::BUTTON_R3)    in_report_.buttons[0] |= XInput::Buttons0::R3;
+
         if (gp_in.buttons & Gamepad::BUTTON_X)     in_report_.buttons[1] |= XInput::Buttons1::X;
         if (gp_in.buttons & Gamepad::BUTTON_A)     in_report_.buttons[1] |= XInput::Buttons1::A;
         if (gp_in.buttons & Gamepad::BUTTON_Y)     in_report_.buttons[1] |= XInput::Buttons1::Y;
@@ -64,33 +63,33 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         if (gp_in.buttons & Gamepad::BUTTON_RB)    in_report_.buttons[1] |= XInput::Buttons1::RB;
         if (gp_in.buttons & Gamepad::BUTTON_SYS)   in_report_.buttons[1] |= XInput::Buttons1::HOME;
 
-        // --- 5. GATILLOS ---
-        in_report_.trigger_l = gp_in.trigger_l;
-        in_report_.trigger_r = gp_in.trigger_r;
+        // --- 5. GATILLOS (Hair Trigger: 5% -> 100%) ---
+        // 5% de 255 es aprox 13. Si pasa de 13, mandamos 255.
+        in_report_.trigger_l = (gp_in.trigger_l > 13) ? 255 : 0;
+        in_report_.trigger_r = (gp_in.trigger_r > 13) ? 255 : 0;
 
-        // --- 6. STICKS (SNAP AL 100% Y ANTI-RECOIL) ---
-        // Aplicamos snap a todos los ejes para que al moverlos un poquito lleguen al tope
-        in_report_.joystick_lx = apply_snap_threshold(gp_in.joystick_lx);
-        in_report_.joystick_ly = apply_snap_threshold(Range::invert(gp_in.joystick_ly));
-        in_report_.joystick_rx = apply_snap_threshold(gp_in.joystick_rx);
+        // --- 6. STICKS Y ANTI-RECOIL ---
+        in_report_.joystick_lx = gp_in.joystick_lx;
+        in_report_.joystick_ly = Range::invert(gp_in.joystick_ly);
+        in_report_.joystick_rx = gp_in.joystick_rx;
         
         int16_t ry_final = Range::invert(gp_in.joystick_ry);
-        ry_final = apply_snap_threshold(ry_final);
 
-        // Anti-recoil (L2 + R2)
-        if (gp_in.trigger_l > 50 && gp_in.trigger_r > 50) 
+        // Anti-recoil: Se activa si el Hair Trigger de L2 y R2 está al máximo
+        if (in_report_.trigger_l == 255 && in_report_.trigger_r == 255) 
         {
-            const int16_t recoil_force = 3000; // Fuerza aumentada para compensar el snap
-            int32_t calc_ry = (int32_t)ry_final + recoil_force;
-            if (calc_ry > 32767) calc_ry = 32767;
-            ry_final = (int16_t)calc_ry;
+            const int16_t recoil_force = 2500; // Fuerza incrementada
+            if (ry_final > (32767 - recoil_force)) ry_final = 32767;
+            else ry_final += recoil_force;
         }
         in_report_.joystick_ry = ry_final;
 
+        // --- 7. ENVÍO ---
         if (tud_suspended()) tud_remote_wakeup();
         tud_xinput::send_report((uint8_t*)&in_report_, sizeof(XInput::InReport));
     }
 
+    // VIBRACIÓN
     if (tud_xinput::receive_report(reinterpret_cast<uint8_t*>(&out_report_), sizeof(XInput::OutReport)) &&
         out_report_.report_id == XInput::OutReportID::RUMBLE)
     {
