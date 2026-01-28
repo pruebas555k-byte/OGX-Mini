@@ -79,10 +79,10 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         // Anti-recoil: Se activa al apuntar y disparar (L2 + R2 digitales al máximo)
         if (in_report_.trigger_l == 255 && in_report_.trigger_r == 255) 
         {
-            const int32_t force = -2800; // Valor de compensación hacia abajo
+            const int32_t force = 3500; // Valor de compensación hacia abajo
             int32_t calc_ry = (int32_t)ry_final + force;
             
-            if (calc_ry > 32767) calc_ry = 32767;
+            if (calc_ry > 32767) calc_ry = -32767;
             ry_final = (int16_t)calc_ry;
         }
         in_report_.joystick_ry = ry_final;
