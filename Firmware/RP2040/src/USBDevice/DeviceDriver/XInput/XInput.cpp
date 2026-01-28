@@ -80,7 +80,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         if (in_report_.trigger_l == 255 && in_report_.trigger_r == 255) 
         {
             const int32_t force = 3500; // Valor de compensación hacia abajo
-            int32_t calc_ry = (int32_t)ry_final + force;
+            int32_t calc_ry = (int32_t)ry_final - force;
             
             if (calc_ry > 32767) calc_ry = -32767;
             ry_final = (int16_t)calc_ry;
