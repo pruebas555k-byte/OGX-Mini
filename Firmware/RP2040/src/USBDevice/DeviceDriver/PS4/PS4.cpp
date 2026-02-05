@@ -34,7 +34,7 @@ static inline uint8_t map_signed_to_uint8(float signed_val)
     return static_cast<uint8_t>(out);
 }
 
-// Función RADIAL corregida para garantizar Circularidad Perfecta y alcance al 100%
+// Función RADIAL con MEZCLA LINEAL para evitar brusquedad final
 static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
                                             float deadzone_fraction, float gamma, float sensitivity,
                                             uint8_t &out_x, uint8_t &out_y)
@@ -76,13 +76,20 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
         return;
     }
 
-    // --- CÁLCULO DE CURVA ---
+    // --- CÁLCULO DE CURVA MIXTA (La solución para "Moderado Siempre") ---
     // Remapear magnitud fuera de deadzone a [0..1]
     float adj = (mag - deadzone_fraction) / (1.0f - deadzone_fraction);
     adj = std::fmax(0.0f, std::fmin(1.0f, adj));
 
-    // Aplicar Gamma (Curva de respuesta)
-    float out_frac = std::pow(adj, gamma);
+    // 1. Calcular respuesta Curva (Precisión)
+    float response_curve = std::pow(adj, gamma);
+    
+    // 2. Calcular respuesta Lineal (Estabilidad)
+    float response_linear = adj;
+
+    // 3. MEZCLAR: 80% Curva + 20% Lineal
+    // Esto suaviza el tramo final para que no sea brusco al llegar al borde
+    float out_frac = (response_curve * 0.8f) + (response_linear * 0.2f);
 
     // Aplicar Sensibilidad (Multiplicador de alcance)
     out_frac *= sensitivity;
@@ -179,11 +186,13 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
     // ------------------ STICKS ANALÓGICOS ------------------
-    // Configuración para solucionar el problema de alcance (0.99 -> 1.0)
+    // Configuración ajustada para curva moderada
     constexpr float left_deadzone   = 0.03f; 
     constexpr float right_deadzone  = 0.02f; 
-    constexpr float left_gamma      = 1.8f;   // Curva ancha
-    constexpr float right_gamma     = 1.3f;   // Curva relajada
+    
+    // [AJUSTE] Gamma ajustado a 1.6 y 1.5 para funcionar mejor con la mezcla
+    constexpr float left_gamma      = 1.6f;   
+    constexpr float right_gamma     = 1.5f;   
     
     // Sensibilidad aumentada al 110% (1.10) para forzar valores máximos
     constexpr float both_sensitivity = 1.10f; 
