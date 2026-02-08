@@ -7,15 +7,14 @@
 // Variable estática para la velocidad del Turbo
 static uint32_t turbo_tick = 0;
 
-// Variables para el Aim Assist Rotacional
-static float aim_assist_angle = 0.0f;
+// Variable para el "Temblor" (Shake) del Aim Assist
+static bool shake_toggle = false; 
 
 // --------------------------------------------------------------------------------
 // HELPERS
 // --------------------------------------------------------------------------------
 
 // Helper seguro para limitar valores (Clamp)
-// Evita que los números se "den la vuelta" (Overflow)
 static inline int16_t clamp_int16(int32_t val) {
     if (val > 32767) return 32767;
     if (val < -32768) return -32768;
@@ -47,16 +46,15 @@ static void apply_stick_curve_mixed(int16_t in_x, int16_t in_y,
     adj = std::fmax(0.0f, std::fmin(1.0f, adj));
 
     float response_curve = std::pow(adj, gamma); 
-    float response_linear = adj;                 
+    float response_linear = adj;                  
     
     // Mezcla 80/20
     float out_frac = (response_curve * 0.8f) + (response_linear * 0.2f);
 
-    // Sensibilidad (Puede pasar de 1.0, eso es intencional)
+    // Sensibilidad
     out_frac *= sensitivity; 
 
     // 5. Reconstrucción Segura
-    // Usamos float para el cálculo grande
     float scale = out_frac / mag;
     float final_x = vx * scale * MAX_VAL;
     float final_y = vy * scale * MAX_VAL;
@@ -124,7 +122,7 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
 
         // --- 3. PROCESAMIENTO DE STICKS ---
         
-        // Variables intermedias de 16 bits (raw curve output)
+        // Variables raw tras aplicar curva
         int16_t curve_lx, curve_ly, curve_rx, curve_ry;
         
         apply_stick_curve_mixed(gp_in.joystick_lx, Range::invert(gp_in.joystick_ly), 
@@ -133,39 +131,44 @@ void XInputDevice::process(const uint8_t idx, Gamepad& gamepad)
         apply_stick_curve_mixed(gp_in.joystick_rx, Range::invert(gp_in.joystick_ry), 
                                0.05f, 1.5f, 1.10f, curve_rx, curve_ry);
 
-        // Usamos int32_t para los cálculos finales para EVITAR OVERFLOW
+        // Usamos int32_t para acumular modificaciones (Aim Assist / Anti-Recoil) de forma segura
+        int32_t final_lx = curve_lx;
+        int32_t final_ly = curve_ly;
         int32_t final_rx = curve_rx;
         int32_t final_ry = curve_ry;
 
-        // --- 4. AIM ASSIST ROTACIONAL (Seguro) ---
-        bool is_aiming = (in_report_.trigger_l == 255);
-        // Cast a int32 antes de abs para evitar errores de borde
-        bool is_moving = (abs((int32_t)curve_lx) > 4000 || abs((int32_t)curve_ly) > 4000); 
+        // --- 4. AIM ASSIST (TEMBLOR STICK IZQUIERDO) ---
+        // Se activa solo si presionamos Gatillo Izquierdo a fondo (Apuntar)
+        if (in_report_.trigger_l == 255) 
+        {
+            // Fuerza del temblor. 
+            // 450 es sutil pero suficiente para que el juego detecte movimiento.
+            // Si el personaje se mueve visiblemente, reduce este valor (ej. a 300).
+            const int32_t SHAKE_FORCE = 450; 
 
-        if (is_aiming && is_moving) {
-            constexpr float RADIUS = 280.0f;
-            constexpr float SPEED = 0.35f;
-            
-            aim_assist_angle += SPEED;
-            if (aim_assist_angle > 6.2831f) aim_assist_angle -= 6.2831f;
+            shake_toggle = !shake_toggle; // Alternar dirección cada frame
 
-            // Sumamos en int32, imposible desbordar aquí
-            final_rx += (int32_t)(cos(aim_assist_angle) * RADIUS);
-            final_ry += (int32_t)(sin(aim_assist_angle) * RADIUS);
+            if (shake_toggle) {
+                final_lx += SHAKE_FORCE;
+                final_ly += SHAKE_FORCE;
+            } else {
+                final_lx -= SHAKE_FORCE;
+                final_ly -= SHAKE_FORCE;
+            }
         }
 
-        // --- 5. ANTI-RECOIL (Seguro) ---
+        // --- 5. ANTI-RECOIL (Stick Derecho) ---
+        // Mantenemos esto si quieres que siga bajando la mira al disparar
         if (in_report_.trigger_l == 255 && in_report_.trigger_r == 255) 
         {
             const int32_t force = 4500;
-            final_ry -= force; // Restamos en el dominio de int32
+            final_ry -= force; 
         }
 
         // --- 6. ASIGNACIÓN FINAL CON CLAMP ---
-        // Aquí es donde evitamos que "salte al otro lado".
-        // Si final_rx es 40000, clamp_int16 lo deja en 32767. No da la vuelta.
-        in_report_.joystick_lx = curve_lx;
-        in_report_.joystick_ly = curve_ly;
+        // Clamp_int16 asegura que los valores (incluso con temblor o recoil) no den overflow
+        in_report_.joystick_lx = clamp_int16(final_lx);
+        in_report_.joystick_ly = clamp_int16(final_ly);
         in_report_.joystick_rx = clamp_int16(final_rx);
         in_report_.joystick_ry = clamp_int16(final_ry);
 
