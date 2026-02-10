@@ -8,11 +8,10 @@
 #include "USBDevice/DeviceDriver/PS4/PS4.h"
 
 // --------------------------------------------------------------------------------
-// HELPERS: MATEMÁTICAS Y CURVAS
+// HELPERS: MATEMÁTICAS (NATIVO / PURO)
 // --------------------------------------------------------------------------------
 
-// [CORRECCIÓN CRÍTICA] Mapeo de float [-1.0 ... 1.0] a byte [0 ... 255]
-// Usamos 127.5 para asegurar que los extremos toquen exactamente 0 y 255.
+// Mapeo de float [-1.0 ... 1.0] a byte [0 ... 255]
 static inline uint8_t map_signed_to_uint8(float signed_val)
 {
     // Forzamos extremos absolutos si estamos muy cerca
@@ -20,9 +19,6 @@ static inline uint8_t map_signed_to_uint8(float signed_val)
     if (signed_val <= -0.99f) return 0;
 
     // Fórmula centrada precisa:
-    // -1.0 * 127.5 + 127.5 = 0
-    //  0.0 * 127.5 + 127.5 = 127.5 -> 128 (round)
-    //  1.0 * 127.5 + 127.5 = 255
     float mapped = signed_val * 127.5f + 127.5f;
     
     int out = static_cast<int>(std::round(mapped));
@@ -34,15 +30,13 @@ static inline uint8_t map_signed_to_uint8(float signed_val)
     return static_cast<uint8_t>(out);
 }
 
-// Función RADIAL con MEZCLA LINEAL para evitar brusquedad final
+// Función RADIAL PURA (SIN SNAP, SIN CURVAS)
+// Comportamiento 100% analógico normal.
 static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
-                                            float deadzone_fraction, float gamma, float sensitivity,
+                                            float deadzone_fraction, float sensitivity,
                                             uint8_t &out_x, uint8_t &out_y)
 {
     constexpr float INT16_MAX_F = 32767.0f;
-    
-    // [AJUSTE] SNAP ahora en 0.93 según lo solicitado
-    constexpr float SNAP_TO_EDGE_THRESHOLD = 0.93f; 
     
     // Normalizar entrada a [-1.0 ... 1.0]
     float vx = static_cast<float>(in_x) / INT16_MAX_F; 
@@ -51,7 +45,7 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
     // Calcular magnitud (distancia al centro)
     float mag = std::sqrt(vx*vx + vy*vy);
 
-    // Deadzone radial
+    // Deadzone radial simple
     if (mag <= deadzone_fraction || mag < 0.001f)
     {
         out_x = 128;
@@ -62,37 +56,15 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
     // Clamp de magnitud física errónea
     if (mag > 1.0f) mag = 1.0f;
 
-    // --- LÓGICA DE SNAP ---
-    // Si estamos cerca del borde físico, ignoramos la magnitud y forzamos 1.0 (100%)
-    // Mantenemos solo la dirección (vx/mag, vy/mag)
-    if (mag >= SNAP_TO_EDGE_THRESHOLD)
-    {
-        float ux = vx / mag; // Vector unitario X
-        float uy = vy / mag; // Vector unitario Y
-        
-        // Mapeamos directamente el vector unitario -> Garantiza magnitud 1.0
-        out_x = map_signed_to_uint8(ux);
-        out_y = map_signed_to_uint8(uy);
-        return;
-    }
-
-    // --- CÁLCULO DE CURVA MIXTA (La solución para "Moderado Siempre") ---
+    // --- CÁLCULO LINEAL NORMAL ---
+    // Sin "Snap to Edge". El valor sube progresivamente hasta el final.
+    
     // Remapear magnitud fuera de deadzone a [0..1]
     float adj = (mag - deadzone_fraction) / (1.0f - deadzone_fraction);
     adj = std::fmax(0.0f, std::fmin(1.0f, adj));
 
-    // 1. Calcular respuesta Curva (Precisión)
-    float response_curve = std::pow(adj, gamma);
-    
-    // 2. Calcular respuesta Lineal (Estabilidad)
-    float response_linear = adj;
-
-    // 3. MEZCLAR: 80% Curva + 20% Lineal
-    // Esto suaviza el tramo final para que no sea brusco al llegar al borde
-    float out_frac = (response_curve * 0.8f) + (response_linear * 0.2f);
-
-    // Aplicar Sensibilidad (Multiplicador de alcance)
-    out_frac *= sensitivity;
+    // Aplicar Sensibilidad (1.01 para asegurar el 100% al final)
+    float out_frac = adj * sensitivity;
     
     // Clamp lógico (no pasar de 1.0 internamente)
     if (out_frac > 1.0f) out_frac = 1.0f;
@@ -186,23 +158,20 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
     // ------------------ STICKS ANALÓGICOS ------------------
-    // Configuración ajustada para curva moderada
+    // Deadzone estándar/baja
     constexpr float left_deadzone   = 0.03f; 
-    constexpr float right_deadzone  = 0.02f; 
+    constexpr float right_deadzone  = 0.03f; 
     
-    // [AJUSTE] Gamma ajustado a 1.6 y 1.5 para funcionar mejor con la mezcla
-    constexpr float left_gamma      = 1.6f;   
-    constexpr float right_gamma     = 1.5f;   
-    
-    // Sensibilidad aumentada al 110% (1.10) para forzar valores máximos
-    constexpr float both_sensitivity = 1.10f; 
+    // [SENSITIVITY]
+    // 1.01f: Prácticamente nativo. Asegura el 255 al final del recorrido físico.
+    constexpr float both_sensitivity = 1.01f; 
 
     apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
-                             left_deadzone, left_gamma, both_sensitivity,
+                             left_deadzone, both_sensitivity,
                              report_in_.leftStickX, report_in_.leftStickY);
 
     apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
-                             right_deadzone, right_gamma, both_sensitivity,
+                             right_deadzone, both_sensitivity,
                              report_in_.rightStickX, report_in_.rightStickY);
 
     // ------------------ D-PAD (HAT) ------------------
@@ -232,7 +201,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     // ------------------ TRIGGERS / SHOULDERS (REMAP) ------------------
     const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0; 
     const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0; 
-    const bool physL2 = gp_in.trigger_l; // Asumimos trigger digital (bool) en tu lógica
+    const bool physL2 = gp_in.trigger_l; // Digital
     const bool physR2 = gp_in.trigger_r; 
 
     // Valores por defecto
@@ -305,7 +274,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
 }
 
 // --------------------------------------------------------------------------------
-// CALLBACKS STANDARD (Sin cambios)
+// CALLBACKS STANDARD
 // --------------------------------------------------------------------------------
 
 uint16_t PS4Device::get_report_cb(uint8_t itf, uint8_t report_id,
