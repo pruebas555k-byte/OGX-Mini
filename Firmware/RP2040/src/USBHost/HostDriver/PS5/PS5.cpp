@@ -7,25 +7,34 @@
 
 void PS5Host::initialize(Gamepad& gamepad, uint8_t address, uint8_t instance, const uint8_t* report_desc, uint16_t desc_len) 
 {
+    // --- Configuración inicial: Color ROJO ---
     out_report_.report_id = PS5::OutReportID::CONTROL;
     out_report_.control_flag[0] = 2;
     out_report_.control_flag[1] = 2;
-    out_report_.led_control_flag = 0x01 | 0x02;
+    out_report_.led_control_flag = 0x01 | 0x02; // Flags para habilitar LED y brillo
     out_report_.pulse_option = 1;
-    out_report_.led_brightness = 0xFF;
+    out_report_.led_brightness = 0xFF; // Brillo al máximo
     out_report_.player_number = idx_ + 1;
-    out_report_.lightbar_blue = 0xFF;
+    
+    out_report_.lightbar_red = 0xFF;   // Rojo al máximo
+    out_report_.lightbar_green = 0x00;
+    out_report_.lightbar_blue = 0x00;
 
+    // Enviar reporte inicial de configuración
     while (!tuh_hid_send_report(address, instance, 0, &out_report_, sizeof(PS5::OutReport)))
     {
         tuh_task();
     }
 
+    // Preparamos la estructura para futuros reportes (Vibración/Feedback)
+    // Mantenemos los valores del LED para que no se apaguen al vibrar
     out_report_ = PS5::OutReport();
     out_report_.report_id = PS5::OutReportID::RUMBLE;
     out_report_.control_flag[0] = 2;
     out_report_.control_flag[1] = 2;
-    out_report_.led_control_flag = 0x04;
+    out_report_.led_control_flag = 0x01 | 0x02 | 0x04; // LED + Brillo + Rumble
+    out_report_.led_brightness = 0xFF;
+    out_report_.lightbar_red = 0xFF;    // Mantener rojo constante
     
     tuh_hid_receive_report(address, instance);
 }
@@ -34,6 +43,7 @@ void PS5Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance
 {
     const PS5::InReport* in_report = reinterpret_cast<const PS5::InReport*>(report);
 
+    // Si nada ha cambiado, no procesamos para ahorrar CPU
     if (std::memcmp(&prev_in_report_.joystick_lx, &in_report->joystick_lx, sizeof(uint8_t) * 6) == 0 &&
         std::memcmp(prev_in_report_.buttons, in_report->buttons, sizeof(in_report->buttons)) == 0)
     {
@@ -43,36 +53,21 @@ void PS5Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance
 
     Gamepad::PadIn gp_in;   
 
+    // Mapeo del DPAD
     switch (in_report->buttons[0] & PS5::DPAD_MASK)
     {
-        case PS5::Buttons0::DPAD_UP:
-            gp_in.dpad |= gamepad.MAP_DPAD_UP;
-            break;
-        case PS5::Buttons0::DPAD_UP_RIGHT:
-            gp_in.dpad |= gamepad.MAP_DPAD_UP_RIGHT;
-            break;
-        case PS5::Buttons0::DPAD_RIGHT:
-            gp_in.dpad |= gamepad.MAP_DPAD_RIGHT;
-            break;
-        case PS5::Buttons0::DPAD_RIGHT_DOWN:
-            gp_in.dpad |= gamepad.MAP_DPAD_DOWN_RIGHT;
-            break;
-        case PS5::Buttons0::DPAD_DOWN:
-            gp_in.dpad |= gamepad.MAP_DPAD_DOWN;
-            break;
-        case PS5::Buttons0::DPAD_DOWN_LEFT:
-            gp_in.dpad |= gamepad.MAP_DPAD_DOWN_LEFT;
-            break;
-        case PS5::Buttons0::DPAD_LEFT:
-            gp_in.dpad |= gamepad.MAP_DPAD_LEFT;
-            break;
-        case PS5::Buttons0::DPAD_LEFT_UP:
-            gp_in.dpad |= gamepad.MAP_DPAD_UP_LEFT;
-            break;
-        default:
-            break;
+        case PS5::Buttons0::DPAD_UP:         gp_in.dpad |= gamepad.MAP_DPAD_UP; break;
+        case PS5::Buttons0::DPAD_UP_RIGHT:   gp_in.dpad |= gamepad.MAP_DPAD_UP_RIGHT; break;
+        case PS5::Buttons0::DPAD_RIGHT:      gp_in.dpad |= gamepad.MAP_DPAD_RIGHT; break;
+        case PS5::Buttons0::DPAD_RIGHT_DOWN: gp_in.dpad |= gamepad.MAP_DPAD_DOWN_RIGHT; break;
+        case PS5::Buttons0::DPAD_DOWN:       gp_in.dpad |= gamepad.MAP_DPAD_DOWN; break;
+        case PS5::Buttons0::DPAD_DOWN_LEFT:  gp_in.dpad |= gamepad.MAP_DPAD_DOWN_LEFT; break;
+        case PS5::Buttons0::DPAD_LEFT:       gp_in.dpad |= gamepad.MAP_DPAD_LEFT; break;
+        case PS5::Buttons0::DPAD_LEFT_UP:    gp_in.dpad |= gamepad.MAP_DPAD_UP_LEFT; break;
+        default: break;
     }
 
+    // Mapeo de botones principales
     if (in_report->buttons[0] & PS5::Buttons0::SQUARE)   gp_in.buttons |= gamepad.MAP_BUTTON_X;
     if (in_report->buttons[0] & PS5::Buttons0::CROSS)    gp_in.buttons |= gamepad.MAP_BUTTON_A;
     if (in_report->buttons[0] & PS5::Buttons0::CIRCLE)   gp_in.buttons |= gamepad.MAP_BUTTON_B;
@@ -86,6 +81,7 @@ void PS5Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance
     if (in_report->buttons[2] & PS5::Buttons2::PS)       gp_in.buttons |= gamepad.MAP_BUTTON_SYS;
     if (in_report->buttons[2] & PS5::Buttons2::MUTE)     gp_in.buttons |= gamepad.MAP_BUTTON_MISC;
 
+    // Triggers y Joysticks
     gp_in.trigger_l = gamepad.scale_trigger_l(in_report->trigger_l);
     gp_in.trigger_r = gamepad.scale_trigger_r(in_report->trigger_r);
 
@@ -101,9 +97,12 @@ void PS5Host::process_report(Gamepad& gamepad, uint8_t address, uint8_t instance
 bool PS5Host::send_feedback(Gamepad& gamepad, uint8_t address, uint8_t instance)
 {
     Gamepad::PadOut gp_out = gamepad.get_pad_out();
+    
+    // Actualizamos motores de vibración
     out_report_.motor_left = gp_out.rumble_l;
     out_report_.motor_right = gp_out.rumble_r;
 
+    // El color rojo se mantiene gracias a que lo pre-configuramos en initialize
     if (tuh_hid_send_report(address, instance, 0, &out_report_, sizeof(PS5::OutReport)))
     {
         manage_rumble(gamepad);
