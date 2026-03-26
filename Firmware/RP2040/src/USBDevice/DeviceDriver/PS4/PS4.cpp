@@ -23,7 +23,7 @@ static inline uint8_t map_signed_to_uint8(float signed_val)
 // Función RADIAL con CURVA OPCIONAL (para FIFA)
 static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
                                             float deadzone_fraction, float sensitivity,
-                                            float curve = 1.0f,   // 1.0f = lineal / <1.0 = curva suave
+                                            float curve = 1.0f,
                                             uint8_t &out_x, uint8_t &out_y)
 {
     constexpr float INT16_MAX_F = 32767.0f;
@@ -45,7 +45,6 @@ static inline void apply_stick_steam_radial(int16_t in_x, int16_t in_y,
    
     float out_frac = adj * sensitivity;
    
-    // === CURVA SUAVE (solo si no es lineal) ===
     if (curve != 1.0f) {
         out_frac = std::pow(out_frac, curve);
     }
@@ -86,21 +85,18 @@ void PS4Device::initialize()
 void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
 {
     (void)idx;
-    // ---- Variables estáticas para MACROS ----
     static bool mutePrev = false;
     static absolute_time_t muteEndTime;
     static bool muteActive = false;
-    static constexpr uint32_t MUTE_MS = 487;
+    static constexpr uint32_t MUTE_MS = 483;
 
     Gamepad::PadIn gp_in = gamepad.get_pad_in();
     const uint16_t btn = gp_in.buttons;
 
-    // Detectar botones especiales
     const bool mutePressed = (btn & Gamepad::BUTTON_MISC) != 0;
     const bool psPressed   = (btn & Gamepad::BUTTON_SYS) != 0;
     const bool sharePressed = (btn & Gamepad::BUTTON_BACK) != 0;
 
-    // Lógica Macro MUTE
     if (mutePressed && !mutePrev)
     {
         muteActive = true;
@@ -108,26 +104,21 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     }
     mutePrev = mutePressed;
 
-    // Temporizador MUTE
     if (muteActive && time_reached(muteEndTime)) muteActive = false;
 
-    // ----------------------------------------------------------------
-    // CONSTRUCCIÓN DEL REPORTE
-    // ----------------------------------------------------------------
     std::memset(&report_in_, 0, sizeof(report_in_));
     report_in_.reportID = 0x01;
 
-    // Touchpad "limpio"
     report_in_.gamepad.touchpadActive = 0;
     report_in_.gamepad.touchpadData.p1.unpressed = 1;
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
     // ------------------ STICKS ANALÓGICOS (OPTIMIZADO FIFA + CURVA SUAVE) ------------------
-    constexpr float left_deadzone     = 0.016f;   // ultra bajo → dribbling preciso
-    constexpr float left_sensitivity  = 1.08f;    // más explosivo
-    constexpr float left_curve        = 0.82f;    // CURVA SUAVE (precisión lenta + explosión)
+    constexpr float left_deadzone     = 0.016f;
+    constexpr float left_sensitivity  = 1.08f;
+    constexpr float left_curve        = 0.82f;
 
-    constexpr float right_deadzone    = 0.07f;    // más estable
+    constexpr float right_deadzone    = 0.07f;
     constexpr float right_sensitivity = 1.02f;
 
     apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
@@ -135,10 +126,9 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
                              report_in_.leftStickX, report_in_.leftStickY);
 
     apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
-                             right_deadzone, right_sensitivity, 1.0f,  // lineal
+                             right_deadzone, right_sensitivity, 1.0f,
                              report_in_.rightStickX, report_in_.rightStickY);
 
-    // ------------------ D-PAD (HAT) ------------------
     switch (gp_in.dpad)
     {
         case Gamepad::DPAD_UP: report_in_.dpad = PS4Dev::HAT_UP; break;
@@ -152,16 +142,14 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         default: report_in_.dpad = PS4Dev::HAT_CENTER; break;
     }
 
-    // ------------------ BOTONES PRINCIPALES ------------------
     const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;
     const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;
 
-    report_in_.buttonWest = (baseSquare || muteActive) ? 1 : 0; // Square
-    report_in_.buttonEast = (baseCircle || muteActive) ? 1 : 0; // Circle
-    report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0; // Cross
-    report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0; // Triangle
+    report_in_.buttonWest = (baseSquare || muteActive) ? 1 : 0;
+    report_in_.buttonEast = (baseCircle || muteActive) ? 1 : 0;
+    report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0;
+    report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0;
 
-    // ------------------ TRIGGERS / SHOULDERS (REMAP) ------------------
     const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0;
     const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0;
     const bool physL2 = gp_in.trigger_l;
@@ -185,7 +173,6 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.leftTrigger = trigL_val;
     report_in_.rightTrigger = trigR_val;
 
-    // ------------------ OTROS BOTONES ------------------
     report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
     report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
     report_in_.buttonSelect = sharePressed ? 1 : 0;
@@ -193,7 +180,6 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.buttonHome = psPressed ? 1 : 0;
     report_in_.buttonTouchpad = sharePressed ? 1 : 0;
 
-    // ------------------ ENVIAR USB ------------------
     if (tud_suspended()) tud_remote_wakeup();
     if (tud_hid_ready())
     {
@@ -202,7 +188,7 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
 }
 
 // --------------------------------------------------------------------------------
-// CALLBACKS STANDARD (sin cambios)
+// CALLBACKS STANDARD
 // --------------------------------------------------------------------------------
 uint16_t PS4Device::get_report_cb(uint8_t itf, uint8_t report_id,
                                   hid_report_type_t report_type,
