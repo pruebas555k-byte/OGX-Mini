@@ -10,35 +10,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: recursive   # importante para Bluepad32 y BTStack
 
       - name: Install Dependencies
-        run: sudo apt update && sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+        run: sudo apt update && sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib ninja-build
 
-      - name: Get Pico SDK
-        run: git clone --branch 2.1.0 --recurse-submodules https://github.com/raspberrypi/pico-sdk.git
-
-      - name: Create Build and Output Folders
-        run: mkdir -p build output
+      - name: Create Build Folder
+        run: mkdir -p Firmware/RP2040/build
 
       - name: Build OGX-Mini for RP2040
         run: |
-          cd build
-          rm -rf ./*
-          cmake -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
+          cd Firmware/RP2040
+          cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DOGXM_BOARD=PI_PICO \
-                -DMAX_GAMEPADS=1 \
-                ../Firmware/RP2040
-          cmake --build .
-
-          FILE=$(find . -maxdepth 1 -name "OGX-Mini-*-PI_PICO.uf2" | head -n 1)
-          cp "$FILE" ../output/
+                -DMAX_GAMEPADS=1
+          cmake --build build --config Release
 
       - name: Upload UF2 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ogx-mini-rp2040
-          path: output/*.uf2
+          path: Firmware/RP2040/build/OGX-Mini-*-PI_PICO.uf2
