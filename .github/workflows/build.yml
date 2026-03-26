@@ -18,21 +18,26 @@ jobs:
       - name: Install Dependencies
         run: sudo apt update && sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib ninja-build
 
-      - name: Create Build Folder
-        run: mkdir -p Firmware/RP2040/build
+      - name: Get Pico SDK
+        run: git clone --branch 2.1.0 --recurse-submodules https://github.com/raspberrypi/pico-sdk.git
+
+      - name: Create Build and Output Folders
+        run: mkdir -p build output
 
       - name: Build OGX-Mini for RP2040 (180 MHz Overclock)
         run: |
-          cd Firmware/RP2040
-          cmake -S . -B build -G Ninja \
+          cd build
+          rm -rf ./*
+          cmake -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DOGXM_BOARD=PI_PICO \
                 -DMAX_GAMEPADS=1 \
-                -DPICO_DEFAULT_SYS_CLK_KHZ=180000
-          cmake --build build --config Release
+                -DPICO_DEFAULT_SYS_CLK_KHZ=180000 \
+                ../Firmware/RP2040
+          cmake --build . --config Release
 
       - name: Upload UF2 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ogx-mini-rp2040
-          path: Firmware/RP2040/build/OGX-Mini-*-PI_PICO.uf2
+          path: build/OGX-Mini-*-PI_PICO.uf2
