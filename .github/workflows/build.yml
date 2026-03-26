@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive   # importante para Bluepad32 y BTStack
+          submodules: recursive
 
       - name: Install Dependencies
         run: sudo apt update && sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib ninja-build
@@ -21,13 +21,14 @@ jobs:
       - name: Create Build Folder
         run: mkdir -p Firmware/RP2040/build
 
-      - name: Build OGX-Mini for RP2040
+      - name: Build OGX-Mini for RP2040 (180 MHz Overclock)
         run: |
           cd Firmware/RP2040
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DOGXM_BOARD=PI_PICO \
-                -DMAX_GAMEPADS=1
+                -DMAX_GAMEPADS=1 \
+                -DPICO_DEFAULT_SYS_CLK_KHZ=180000
           cmake --build build --config Release
 
       - name: Upload UF2 Artifact
