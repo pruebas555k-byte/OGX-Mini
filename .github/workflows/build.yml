@@ -1,7 +1,9 @@
-name: Build OGX-Mini RP2040
+name: Build OGX-Mini
 
 on:
   push:
+    branches: [ "main" ]
+  pull_request:
     branches: [ "main" ]
   workflow_dispatch:
 
@@ -9,14 +11,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        board: [PI_PICO] # Solo dejamos la Pico estándar
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Install Dependencies
-        run: sudo apt update && sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib ninja-build
+        run: sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
 
       - name: Get Pico SDK
         run: git clone --branch 2.1.0 --recurse-submodules https://github.com/raspberrypi/pico-sdk.git
@@ -24,20 +29,40 @@ jobs:
       - name: Create Build and Output Folders
         run: mkdir -p build output
 
-      - name: Build OGX-Mini for RP2040 (180 MHz Overclock)
+      - name: Build OGX-Mini - ${{ matrix.board }}
         run: |
           cd build
-          rm -rf ./*
           cmake -DPICO_SDK_PATH=${{ github.workspace }}/pico-sdk \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DOGXM_BOARD=PI_PICO \
+                -DOGXM_BOARD=${{ matrix.board }} \
                 -DMAX_GAMEPADS=1 \
-                -DPICO_DEFAULT_SYS_CLK_KHZ=100000 \
                 ../Firmware/RP2040
-          cmake --build . --config Release
+          cmake --build .
+          
+          # Buscar el archivo .uf2 generado y moverlo a la carpeta de salida
+          FILE=$(find . -maxdepth 1 -name "OGX-Mini-*-${{ matrix.board }}.uf2" | head -n 1)
+          cp "$FILE" ../output/
 
       - name: Upload UF2 Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ogx-mini-rp2040
-          path: build/OGX-Mini-*-PI_PICO.uf2
+          name: uf2-${{ matrix.board }}
+          path: output/*.uf2
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # Solo crea el release si hay un tag o es un push manual/main
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_artifacts
+          merge-multiple: true
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          draft: true
+          files: all_artifacts/*.uf2
