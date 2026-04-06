@@ -102,17 +102,18 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     report_in_.gamepad.touchpadActive = 0;
     report_in_.gamepad.touchpadData.p1.unpressed = 1;
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
-    // ------------------ STICKS ANALÓGICOS (OPTIMIZADO FIFA + CURVA SUAVE) ------------------
+    // ------------------ STICKS ANALÓGICOS (NORMALES - SIN CURVAS RARAS) ------------------
     constexpr float left_deadzone = 0.016f;
-    constexpr float left_sensitivity = 1.08f;
-    constexpr float left_curve = 0.82f;
+    constexpr float left_sensitivity = 1.0f;   // ← normal
+    constexpr float left_curve = 1.0f;         // ← sin curva rara
     constexpr float right_deadzone = 0.07f;
-    constexpr float right_sensitivity = 1.02f;
+    constexpr float right_sensitivity = 1.0f;  // ← normal
+    constexpr float right_curve = 1.0f;        // ← sin curva rara
     apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
                              left_deadzone, left_sensitivity, left_curve,
                              report_in_.leftStickX, report_in_.leftStickY);
     apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
-                             right_deadzone, right_sensitivity, 1.0f,
+                             right_deadzone, right_sensitivity, right_curve,
                              report_in_.rightStickX, report_in_.rightStickY);
     // D-PAD
     switch (gp_in.dpad)
@@ -154,20 +155,15 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         trigL_val = physR2_val;
     }
     // L2 físico → R1 virtual: SOLO se activa a partir del 75% del recorrido
-    if (physL2_val > 191) { // ← 75% de 255 (191 ≈ 0.75 * 255)
+    if (physL2_val > 191) { // ← EXACTAMENTE 75% (191 de 255)
         virtR1 = true;
     }
     report_in_.buttonL1 = virtL1 ? 1 : 0;
     report_in_.buttonR1 = virtR1 ? 1 : 0;
     report_in_.buttonL2 = virtL2 ? 1 : 0;
     report_in_.buttonR2 = virtR2 ? 1 : 0;
-    report_in_.leftTrigger = trigL_val;   // L2 virtual (viene del R2 físico)
-    // Mostramos el porcentaje REAL del L2 físico en el trigger derecho
-    // para que puedas ver en cualquier tester cuánto está apretado antes de que salga el R1
+    report_in_.leftTrigger = trigL_val;
     report_in_.rightTrigger = trigR_val;
-    if (physL2_val > report_in_.rightTrigger) {
-        report_in_.rightTrigger = physL2_val;
-    }
     report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
     report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
     report_in_.buttonSelect = sharePressed ? 1 : 0;
