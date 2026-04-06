@@ -85,11 +85,17 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     static absolute_time_t muteEndTime;
     static bool muteActive = false;
     static constexpr uint32_t MUTE_MS = 487;
+
+    // ================== NUEVO: LIMITADOR DE VELOCIDAD USB (evita crashes) ==================
+    // Solo enviamos reportes cada 1 ms (1000 Hz) → evita saturar TinyUSB
+    static absolute_time_t next_report_time = make_timeout_time_ms(0);
+
     Gamepad::PadIn gp_in = gamepad.get_pad_in();
     const uint16_t btn = gp_in.buttons;
     const bool mutePressed = (btn & Gamepad::BUTTON_MISC) != 0;
     const bool psPressed = (btn & Gamepad::BUTTON_SYS) != 0;
     const bool sharePressed = (btn & Gamepad::BUTTON_BACK) != 0;
+
     if (mutePressed && !mutePrev)
     {
         muteActive = true;
@@ -97,24 +103,28 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     }
     mutePrev = mutePressed;
     if (muteActive && time_reached(muteEndTime)) muteActive = false;
+
     std::memset(&report_in_, 0, sizeof(report_in_));
     report_in_.reportID = 0x01;
     report_in_.gamepad.touchpadActive = 0;
     report_in_.gamepad.touchpadData.p1.unpressed = 1;
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
+
     // ------------------ STICKS ANALÓGICOS (NORMALES - SIN CURVAS RARAS) ------------------
     constexpr float left_deadzone = 0.016f;
-    constexpr float left_sensitivity = 1.0f;   // ← normal
-    constexpr float left_curve = 1.0f;         // ← sin curva rara
+    constexpr float left_sensitivity = 1.0f;
+    constexpr float left_curve = 1.0f;
     constexpr float right_deadzone = 0.07f;
-    constexpr float right_sensitivity = 1.0f;  // ← normal
-    constexpr float right_curve = 1.0f;        // ← sin curva rara
+    constexpr float right_sensitivity = 1.0f;
+    constexpr float right_curve = 1.0f;
+
     apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
                              left_deadzone, left_sensitivity, left_curve,
                              report_in_.leftStickX, report_in_.leftStickY);
     apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
                              right_deadzone, right_sensitivity, right_curve,
                              report_in_.rightStickX, report_in_.rightStickY);
+
     // D-PAD
     switch (gp_in.dpad)
     {
@@ -128,52 +138,61 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         case Gamepad::DPAD_UP_LEFT: report_in_.dpad = PS4Dev::HAT_UP_LEFT; break;
         default: report_in_.dpad = PS4Dev::HAT_CENTER; break;
     }
+
     const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;
     const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;
     report_in_.buttonWest = (baseSquare || muteActive) ? 1 : 0;
     report_in_.buttonEast = (baseCircle || muteActive) ? 1 : 0;
     report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0;
     report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0;
-    // ================== REMAPPING TRIGGERS ANALÓGICOS (CORREGIDO PS5-STYLE) ==================
+
+    // ================== REMAPPING TRIGGERS ANALÓGICOS ==================
     const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0;
     const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0;
-    uint8_t physL2_val = gp_in.trigger_l; // 0-255
+    uint8_t physL2_val = gp_in.trigger_l;
     uint8_t physR2_val = gp_in.trigger_r;
+
     bool virtL1 = physL1;
     bool virtR1 = false;
     bool virtL2 = false;
     bool virtR2 = false;
     uint8_t trigL_val = 0;
     uint8_t trigR_val = 0;
+
     if (physR1) {
         virtR2 = true;
-        trigR_val = 0xFF; // RB físico → R2 a tope
+        trigR_val = 0xFF;
     }
-    // R2 físico → L2 virtual con valor REAL (porcentaje como PS5)
-    if (physR2_val > 20) { // deadzone pequeño
+    if (physR2_val > 20) {
         virtL2 = true;
         trigL_val = physR2_val;
     }
-    // L2 físico → R1 virtual: SOLO se activa a partir del 75% del recorrido
-    if (physL2_val > 191) { // ← EXACTAMENTE 75% (191 de 255)
+    // L2 físico → R1 virtual: SOLO a partir del 75%
+    if (physL2_val > 191) {
         virtR1 = true;
     }
+
     report_in_.buttonL1 = virtL1 ? 1 : 0;
     report_in_.buttonR1 = virtR1 ? 1 : 0;
     report_in_.buttonL2 = virtL2 ? 1 : 0;
     report_in_.buttonR2 = virtR2 ? 1 : 0;
     report_in_.leftTrigger = trigL_val;
     report_in_.rightTrigger = trigR_val;
+
     report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
     report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
     report_in_.buttonSelect = sharePressed ? 1 : 0;
     report_in_.buttonStart = (btn & Gamepad::BUTTON_START) ? 1 : 0;
     report_in_.buttonHome = psPressed ? 1 : 0;
     report_in_.buttonTouchpad = sharePressed ? 1 : 0;
+
+    // ================== ENVÍO USB CON LIMITADOR (esto suele arreglar los crashes) ==================
     if (tud_suspended()) tud_remote_wakeup();
-    if (tud_hid_ready())
+
+    if (time_reached(next_report_time) && tud_hid_ready())
     {
         tud_hid_report(0, reinterpret_cast<uint8_t*>(&report_in_), sizeof(PS4Dev::InReport));
+        next_report_time = make_timeout_time_ms(1);   // ← 1000 Hz máximo (muy estable)
     }
 }
 // --------------------------------------------------------------------------------
