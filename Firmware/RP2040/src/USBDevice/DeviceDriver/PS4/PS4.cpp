@@ -153,16 +153,21 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
         virtL2 = true;
         trigL_val = physR2_val;
     }
-    // L2 físico → R1 virtual: SOLO se activa después de ~50% de recorrido (a la mitad)
-    if (physL2_val > 127) { // ← CAMBIO AQUÍ (50 % de 255)
+    // L2 físico → R1 virtual: SOLO se activa a partir del 75% del recorrido
+    if (physL2_val > 191) { // ← 75% de 255 (191 ≈ 0.75 * 255)
         virtR1 = true;
     }
     report_in_.buttonL1 = virtL1 ? 1 : 0;
     report_in_.buttonR1 = virtR1 ? 1 : 0;
     report_in_.buttonL2 = virtL2 ? 1 : 0;
     report_in_.buttonR2 = virtR2 ? 1 : 0;
-    report_in_.leftTrigger = trigL_val;
+    report_in_.leftTrigger = trigL_val;   // L2 virtual (viene del R2 físico)
+    // Mostramos el porcentaje REAL del L2 físico en el trigger derecho
+    // para que puedas ver en cualquier tester cuánto está apretado antes de que salga el R1
     report_in_.rightTrigger = trigR_val;
+    if (physL2_val > report_in_.rightTrigger) {
+        report_in_.rightTrigger = physL2_val;
+    }
     report_in_.buttonL3 = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
     report_in_.buttonR3 = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
     report_in_.buttonSelect = sharePressed ? 1 : 0;
