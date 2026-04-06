@@ -32,7 +32,7 @@ jobs:
                 -DCMAKE_BUILD_TYPE=Release \
                 -DOGXM_BOARD=PI_PICO \
                 -DMAX_GAMEPADS=1 \
-                -DPICO_DEFAULT_SYS_CLK_KHZ=180000 \
+                -DPICO_DEFAULT_SYS_CLK_KHZ=100000 \
                 ../Firmware/RP2040
           cmake --build . --config Release
 
