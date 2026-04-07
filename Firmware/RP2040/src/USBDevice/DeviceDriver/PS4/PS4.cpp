@@ -2,11 +2,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include "pico/time.h"                     // make_timeout_time_ms, time_reached
-#include "USBDevice/DeviceDriver/PS4/PS4.h" // tu clase base
+#include "pico/time.h"
+#include "USBDevice/DeviceDriver/PS4/PS4.h"
 
 // ===================================================================
-// HELPERS: MATEMÁTICAS (NATIVO / PURO)
+// HELPERS: MATEMÁTICAS (sin cambios)
 // ===================================================================
 static inline uint8_t map_signed_to_uint8(float signed_val)
 {
@@ -83,129 +83,140 @@ void PS4Device::process(const uint8_t idx, Gamepad& gamepad)
     static bool muteActive = false;
     static constexpr uint32_t MUTE_MS = 487;
 
-    // Contadores internos (necesarios para PS4 real)
     static uint8_t report_counter = 0;
     static uint8_t tpad_increment = 0;
+
+    // ================== MODO TEST / DEBUG (para ver si el PC recibe algo) ==================
+    static bool testMode = true;          // ←←← CAMBIA A false cuando quieras modo normal
 
     Gamepad::PadIn gp_in = gamepad.get_pad_in();
     const uint16_t btn = gp_in.buttons;
 
-    const bool mutePressed  = (btn & Gamepad::BUTTON_MISC) != 0;
-    const bool psPressed    = (btn & Gamepad::BUTTON_SYS) != 0;
-    const bool sharePressed = (btn & Gamepad::BUTTON_BACK) != 0;
-
-    if (mutePressed && !mutePrev)
-    {
-        muteActive = true;
-        muteEndTime = make_timeout_time_ms(MUTE_MS);
-    }
-    mutePrev = mutePressed;
-    if (muteActive && time_reached(muteEndTime)) muteActive = false;
-
-    // ================================================
-    // Reporte limpio
-    // ================================================
     std::memset(&report_in_, 0, sizeof(report_in_));
-
     report_in_.reportID = 0x01;
 
-    // --- Sticks (tu curva FIFA ya optimizada) ---
-    constexpr float left_deadzone   = 0.016f;
-    constexpr float left_sensitivity = 1.08f;
-    constexpr float left_curve      = 0.82f;
-    constexpr float right_deadzone  = 0.07f;
-    constexpr float right_sensitivity = 1.02f;
-
-    apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
-                             left_deadzone, left_sensitivity, left_curve,
-                             report_in_.leftStickX, report_in_.leftStickY);
-
-    apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
-                             right_deadzone, right_sensitivity, 1.0f,
-                             report_in_.rightStickX, report_in_.rightStickY);
-
-    // --- D-Pad ---
-    switch (gp_in.dpad)
+    if (testMode)
     {
-        case Gamepad::DPAD_UP:        report_in_.dpad = PS4Dev::HAT_UP;        break;
-        case Gamepad::DPAD_UP_RIGHT:  report_in_.dpad = PS4Dev::HAT_UP_RIGHT;  break;
-        case Gamepad::DPAD_RIGHT:     report_in_.dpad = PS4Dev::HAT_RIGHT;     break;
-        case Gamepad::DPAD_DOWN_RIGHT:report_in_.dpad = PS4Dev::HAT_DOWN_RIGHT;break;
-        case Gamepad::DPAD_DOWN:      report_in_.dpad = PS4Dev::HAT_DOWN;      break;
-        case Gamepad::DPAD_DOWN_LEFT: report_in_.dpad = PS4Dev::HAT_DOWN_LEFT; break;
-        case Gamepad::DPAD_LEFT:      report_in_.dpad = PS4Dev::HAT_LEFT;      break;
-        case Gamepad::DPAD_UP_LEFT:   report_in_.dpad = PS4Dev::HAT_UP_LEFT;   break;
-        default:                      report_in_.dpad = PS4Dev::HAT_CENTER;     break;
+        // --- Modo prueba: analógico izquierdo loco + botón X ---
+        static uint32_t frame = 0;
+        frame++;
+
+        // Analógico izquierdo girando en círculo rápido
+        float angle = frame * 0.25f;           // velocidad del giro (más alto = más loco)
+        float radius = 0.85f;
+        int16_t fake_x = static_cast<int16_t>(32767.0f * radius * std::sin(angle));
+        int16_t fake_y = static_cast<int16_t>(32767.0f * radius * std::cos(angle));
+
+        apply_stick_steam_radial(fake_x, fake_y, 0.0f, 1.0f, 1.0f,
+                                 report_in_.leftStickX, report_in_.leftStickY);
+
+        // Botón X (Cross) presionado y soltado rápidamente
+        report_in_.buttonSouth = (frame % 8 < 4) ? 1 : 0;   // parpadeo visible
+
+        // Resto neutral
+        report_in_.rightStickX = PS4Dev::JOYSTICK_MID;
+        report_in_.rightStickY = PS4Dev::JOYSTICK_MID;
+        report_in_.dpad = PS4Dev::HAT_CENTER;
+    }
+    else
+    {
+        // ====================== TU CÓDIGO NORMAL (sin cambios) ======================
+        const bool mutePressed  = (btn & Gamepad::BUTTON_MISC) != 0;
+        const bool psPressed    = (btn & Gamepad::BUTTON_SYS) != 0;
+        const bool sharePressed = (btn & Gamepad::BUTTON_BACK) != 0;
+
+        if (mutePressed && !mutePrev)
+        {
+            muteActive = true;
+            muteEndTime = make_timeout_time_ms(MUTE_MS);
+        }
+        mutePrev = mutePressed;
+        if (muteActive && time_reached(muteEndTime)) muteActive = false;
+
+        // Sticks
+        constexpr float left_deadzone   = 0.016f;
+        constexpr float left_sensitivity = 1.08f;
+        constexpr float left_curve      = 0.82f;
+        constexpr float right_deadzone  = 0.07f;
+        constexpr float right_sensitivity = 1.02f;
+
+        apply_stick_steam_radial(gp_in.joystick_lx, gp_in.joystick_ly,
+                                 left_deadzone, left_sensitivity, left_curve,
+                                 report_in_.leftStickX, report_in_.leftStickY);
+
+        apply_stick_steam_radial(gp_in.joystick_rx, gp_in.joystick_ry,
+                                 right_deadzone, right_sensitivity, 1.0f,
+                                 report_in_.rightStickX, report_in_.rightStickY);
+
+        // D-Pad
+        switch (gp_in.dpad)
+        {
+            case Gamepad::DPAD_UP:        report_in_.dpad = PS4Dev::HAT_UP;        break;
+            case Gamepad::DPAD_UP_RIGHT:  report_in_.dpad = PS4Dev::HAT_UP_RIGHT;  break;
+            case Gamepad::DPAD_RIGHT:     report_in_.dpad = PS4Dev::HAT_RIGHT;     break;
+            case Gamepad::DPAD_DOWN_RIGHT:report_in_.dpad = PS4Dev::HAT_DOWN_RIGHT;break;
+            case Gamepad::DPAD_DOWN:      report_in_.dpad = PS4Dev::HAT_DOWN;      break;
+            case Gamepad::DPAD_DOWN_LEFT: report_in_.dpad = PS4Dev::HAT_DOWN_LEFT; break;
+            case Gamepad::DPAD_LEFT:      report_in_.dpad = PS4Dev::HAT_LEFT;      break;
+            case Gamepad::DPAD_UP_LEFT:   report_in_.dpad = PS4Dev::HAT_UP_LEFT;   break;
+            default:                      report_in_.dpad = PS4Dev::HAT_CENTER;     break;
+        }
+
+        const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;
+        const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;
+
+        report_in_.buttonWest  = (baseSquare || muteActive) ? 1 : 0;
+        report_in_.buttonEast  = (baseCircle || muteActive) ? 1 : 0;
+        report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0;
+        report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0;
+
+        // Remapeo triggers PS5-style
+        const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0;
+        const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0;
+        uint8_t physL2_val = gp_in.trigger_l;
+        uint8_t physR2_val = gp_in.trigger_r;
+
+        bool virtL1 = physL1;
+        bool virtR1 = false;
+        bool virtL2 = false;
+        bool virtR2 = false;
+        uint8_t trigL_val = 0;
+        uint8_t trigR_val = 0;
+
+        if (physR1) { virtR2 = true; trigR_val = 0xFF; }
+        if (physR2_val > 20) { virtL2 = true; trigL_val = physR2_val; }
+        if (physL2_val > 127) { virtR1 = true; }
+
+        report_in_.buttonL1 = virtL1 ? 1 : 0;
+        report_in_.buttonR1 = virtR1 ? 1 : 0;
+        report_in_.buttonL2 = virtL2 ? 1 : 0;
+        report_in_.buttonR2 = virtR2 ? 1 : 0;
+
+        report_in_.leftTrigger  = trigL_val;
+        report_in_.rightTrigger = trigR_val;
+
+        report_in_.buttonL3     = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
+        report_in_.buttonR3     = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
+        report_in_.buttonSelect = sharePressed ? 1 : 0;
+        report_in_.buttonStart  = (btn & Gamepad::BUTTON_START) ? 1 : 0;
+        report_in_.buttonHome   = psPressed ? 1 : 0;
+        report_in_.buttonTouchpad = sharePressed ? 1 : 0;
     }
 
-    // --- Botones base ---
-    const bool baseSquare = (btn & Gamepad::BUTTON_X) != 0;
-    const bool baseCircle = (btn & Gamepad::BUTTON_B) != 0;
-
-    report_in_.buttonWest  = (baseSquare || muteActive) ? 1 : 0;   // Square
-    report_in_.buttonEast  = (baseCircle || muteActive) ? 1 : 0;   // Circle
-    report_in_.buttonSouth = (btn & Gamepad::BUTTON_A) ? 1 : 0;    // Cross
-    report_in_.buttonNorth = (btn & Gamepad::BUTTON_Y) ? 1 : 0;    // Triangle
-
-    // --- Remapeo de triggers (tu lógica PS5-style) ---
-    const bool physL1 = (btn & Gamepad::BUTTON_LB) != 0;
-    const bool physR1 = (btn & Gamepad::BUTTON_RB) != 0;
-    uint8_t physL2_val = gp_in.trigger_l;
-    uint8_t physR2_val = gp_in.trigger_r;
-
-    bool virtL1 = physL1;
-    bool virtR1 = false;
-    bool virtL2 = false;
-    bool virtR2 = false;
-    uint8_t trigL_val = 0;
-    uint8_t trigR_val = 0;
-
-    if (physR1) { virtR2 = true; trigR_val = 0xFF; }
-    if (physR2_val > 20) { virtL2 = true; trigL_val = physR2_val; }
-    if (physL2_val > 127) { virtR1 = true; }
-
-    report_in_.buttonL1 = virtL1 ? 1 : 0;
-    report_in_.buttonR1 = virtR1 ? 1 : 0;
-    report_in_.buttonL2 = virtL2 ? 1 : 0;
-    report_in_.buttonR2 = virtR2 ? 1 : 0;
-
-    report_in_.leftTrigger  = trigL_val;
-    report_in_.rightTrigger = trigR_val;
-
-    // --- Resto de botones ---
-    report_in_.buttonL3     = (btn & Gamepad::BUTTON_L3) ? 1 : 0;
-    report_in_.buttonR3     = (btn & Gamepad::BUTTON_R3) ? 1 : 0;
-    report_in_.buttonSelect = sharePressed ? 1 : 0;
-    report_in_.buttonStart  = (btn & Gamepad::BUTTON_START) ? 1 : 0;
-    report_in_.buttonHome   = psPressed ? 1 : 0;
-    report_in_.buttonTouchpad = sharePressed ? 1 : 0;
-
-    // --- Contadores ---
+    // ====================== CAMPOS SIEMPRE NECESARIOS ======================
     report_in_.reportCounter = report_counter;
-    report_counter = (report_counter + 1) & 0x3F;   // 6 bits
+    report_counter = (report_counter + 1) & 0x3F;
 
-    // --- Bloque vendor-specific (54 bytes) ---
     report_in_.gamepad.touchpadActive = 0;
     report_in_.gamepad.tpadIncrement  = tpad_increment++;
     report_in_.gamepad.touchpadData.p1.unpressed = 1;
     report_in_.gamepad.touchpadData.p2.unpressed = 1;
 
-    // Valores "oficiales" para que Warzone/FIFA lo acepte mejor
-    report_in_.gamepad.sensorData.battery = 0x0BB8;           // batería ~75%
-    report_in_.gamepad.sensorData.gyroscope.x = 0;
-    report_in_.gamepad.sensorData.gyroscope.y = 0;
-    report_in_.gamepad.sensorData.gyroscope.z = 0;
-    report_in_.gamepad.sensorData.accelerometer.x = 0;
-    report_in_.gamepad.sensorData.accelerometer.y = 0;
-    report_in_.gamepad.sensorData.accelerometer.z = 0;
-
-    report_in_.gamepad.sensorData.powerLevel = 0x0A;   // 100% (4 bits)
-    report_in_.gamepad.sensorData.charging   = 0;
-    report_in_.gamepad.sensorData.headphones = 0;
-    report_in_.gamepad.sensorData.microphone = 0;
+    report_in_.gamepad.sensorData.battery = 0x0BB8;
+    report_in_.gamepad.sensorData.powerLevel = 0x0A;
+    report_in_.gamepad.sensorData.charging = 0;
     report_in_.gamepad.sensorData.notConnected = 0;
 
-    // Wake-up si está suspendido
     if (tud_suspended()) tud_remote_wakeup();
 
     if (tud_hid_ready())
